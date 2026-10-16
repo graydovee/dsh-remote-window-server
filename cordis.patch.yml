@@ -1,0 +1,16 @@
+# dsh-remote-workspace-server: official providers plus the remote session RPC row.
+- insert:
+    - id: remote-session-persistence
+      name: '@deepseek-ai/dsh-session-persistence-jsonl'
+      disabled: !!js ctx.get('sessionPersistence') !== undefined
+      config:
+        root: !!js dshHomePath('remote-server-sessions')
+        compression: zstd
+    - id: dsh-remote-workspace-server
+      name: dsh-remote-workspace-server/server
+      config:
+        workspace: !!js process.cwd()
+        identityFile: !!js dshHomePath('remote-server/server-id')
+        workspaceIndex: !!js dshHomePath('remote-server/workspaces.json')
+        statusFile: !!js dshHomePath('remote-server/status.json')
+        exitOnClose: true
