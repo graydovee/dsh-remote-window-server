@@ -104,7 +104,11 @@ const handleId = z.string().min(1).transform(value => value as RemoteHandleId)
 const remoteWorkspaceRequest = z.object({ workspaceId }).strict()
 const remoteCreateWorkspaceRequest = z.object({ path: z.string().startsWith('/'), title: z.string().min(1).optional() }).strict()
 const remoteSessionListRequest = z.object({ workspaceId }).strict()
-const remoteSessionCreateRequest = z.object({ workspaceId, header: z.record(z.string(), z.unknown()) }).strict()
+const remoteSessionCreateRequest = z.object({
+  workspaceId,
+  header: z.record(z.string(), z.unknown()),
+  inheritedEventCount: z.number().int().nonnegative().optional(),
+}).strict()
 const remoteSessionOpenRequest = z.object({ workspaceId, sessionId, mode: z.enum(['read', 'write']) }).strict()
 const remoteSessionAppendRequest = z.object({ handleId: handleId, events: z.array(z.record(z.string(), z.unknown())) }).strict()
 const remoteSessionHandleRequest = z.object({ handleId }).strict()
@@ -324,7 +328,7 @@ export class RemoteExecutionServer {
         protocol: REMOTE_SESSION_PROTOCOL,
         serverId: this.options.serverId ?? 'ephemeral',
         installationId: this.options.installationId ?? 'stdio',
-        version: this.options.version ?? '0.1.0-alpha12',
+        version: this.options.version ?? '0.1.0-alpha18',
         workspacesRoot: this.workspace,
         // The directory browser's 主目录 shortcut: the server process runs as
         // the remote user, so its home is the user's home.
@@ -371,7 +375,7 @@ export class RemoteExecutionServer {
     if (method === 'persist.create') {
       if (sessions === undefined) throw new Error('remote session persistence is not configured')
       const input = remoteSessionCreateRequest.parse(raw)
-      return await sessions.createSession(input.workspaceId, input.header as never)
+      return await sessions.createSession(input.workspaceId, input.header as never, input.inheritedEventCount)
     }
     if (method === 'persist.locate') {
       if (sessions === undefined) throw new Error('remote session persistence is not configured')

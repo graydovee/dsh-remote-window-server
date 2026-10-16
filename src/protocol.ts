@@ -88,4 +88,13 @@ export interface SessionHandleResponse {
   handleId: RemoteHandleId
   header: unknown
   events?: readonly unknown[]
+  /**
+   * Fork-inherited prefix length stored with the log.
+   *
+   * A forked session's header is `isSeeded`, and the official backend *requires*
+   * the count when it stores one (`seeded session header requires an inherited
+   * event count`); a resume of a seeded log needs it back for the same reason
+   * the header carries it.
+   */
+  inheritedEventCount?: number
 }

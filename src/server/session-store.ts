@@ -240,12 +240,25 @@ export class RemoteSessionStore {
     return record === undefined ? undefined : this.workspaceId(record.path)
   }
 
-  async createSession(workspaceId: WorkspaceId, header: SessionHeader): Promise<{ handleId: RemoteHandleId; header: SessionHeader }> {
+  async createSession(
+    workspaceId: WorkspaceId,
+    header: SessionHeader,
+    inheritedEventCount?: number,
+  ): Promise<{ handleId: RemoteHandleId; header: SessionHeader; inheritedEventCount?: number }> {
     const workspace = await this.workspace(workspaceId)
-    const handle = await this.persistence().create({ ...header, cwd: workspace.path })
+    // A seeded header (a fork) cannot be stored without the inherited prefix
+    // length; the official backend refuses it. Pass it through when given.
+    const handle = await this.persistence().create(
+      { ...header, cwd: workspace.path },
+      inheritedEventCount === undefined ? undefined : { inheritedEventCount: inheritedEventCount as never },
+    )
     const handleId = asHandleId(randomUUID())
     this.handles.set(handleId, handle)
-    return { handleId, header: handle.header }
+    return {
+      handleId,
+      header: handle.header,
+      inheritedEventCount: Number(handle.inheritedEventCount),
+    }
   }
 
   async openSession(workspaceId: WorkspaceId, sessionId: RemoteSessionId, mode: 'read' | 'write') {
@@ -258,7 +271,12 @@ export class RemoteSessionStore {
     const handleId = asHandleId(randomUUID())
     this.handles.set(handleId, handle)
     const result = await handle.read()
-    return { handleId, header: handle.header, events: result.events }
+    return {
+      handleId,
+      header: handle.header,
+      events: result.events,
+      inheritedEventCount: Number(handle.inheritedEventCount),
+    }
   }
 
   async append(handleId: RemoteHandleId, events: readonly SessionEvent[]): Promise<void> {
