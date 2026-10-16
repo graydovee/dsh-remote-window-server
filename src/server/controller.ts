@@ -329,7 +329,7 @@ export class RemoteExecutionServer {
         protocol: REMOTE_SESSION_PROTOCOL,
         serverId: this.options.serverId ?? 'ephemeral',
         installationId: this.options.installationId ?? 'stdio',
-        version: this.options.version ?? '0.1.0-alpha23',
+        version: this.options.version ?? '0.1.0-alpha24',
         workspacesRoot: this.workspace,
         // The directory browser's 主目录 shortcut: the server process runs as
         // the remote user, so its home is the user's home.
