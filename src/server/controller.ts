@@ -113,6 +113,7 @@ const remoteSessionOpenRequest = z.object({ workspaceId, sessionId, mode: z.enum
 const remoteSessionAppendRequest = z.object({ handleId: handleId, events: z.array(z.record(z.string(), z.unknown())) }).strict()
 const remoteSessionHandleRequest = z.object({ handleId }).strict()
 const remoteSessionLocateRequest = z.object({ sessionId }).strict()
+const remoteSessionRenameRequest = z.object({ workspaceId, sessionId, title: z.string().min(1) }).strict()
 
 /** Options for one remote execution-world server. */
 export interface RemoteServerOptions {
@@ -328,7 +329,7 @@ export class RemoteExecutionServer {
         protocol: REMOTE_SESSION_PROTOCOL,
         serverId: this.options.serverId ?? 'ephemeral',
         installationId: this.options.installationId ?? 'stdio',
-        version: this.options.version ?? '0.1.0-alpha18',
+        version: this.options.version ?? '0.1.0-alpha19',
         workspacesRoot: this.workspace,
         // The directory browser's 主目录 shortcut: the server process runs as
         // the remote user, so its home is the user's home.
@@ -371,6 +372,11 @@ export class RemoteExecutionServer {
     if (method === 'persist.titles') {
       if (sessions === undefined) throw new Error('remote session persistence is not configured')
       return await sessions.titles(remoteSessionListRequest.parse(raw).workspaceId)
+    }
+    if (method === 'persist.rename') {
+      if (sessions === undefined) throw new Error('remote session persistence is not configured')
+      const input = remoteSessionRenameRequest.parse(raw)
+      return await sessions.rename(input.workspaceId, input.sessionId, input.title)
     }
     if (method === 'persist.create') {
       if (sessions === undefined) throw new Error('remote session persistence is not configured')

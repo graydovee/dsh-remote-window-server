@@ -83,6 +83,58 @@ describe('RemoteSessionStore', () => {
     await expect(store.titles(workspace.id)).resolves.toEqual([{ id: 's1', title: '' }])
   })
 
+  it('renames by appending one user title event, without a live session', async () => {
+    // The rename must not open the session anywhere: it takes the log's write
+    // handle, appends the official `session/title` shape at the next seq, and
+    // flushes. No agent, no conversation.
+    const appended: unknown[] = []
+    let flushed = false
+    let closed = false
+    const persistence = {
+      list: async () => [{ header: header('s1', '/srv/project'), revision: 'r1' as never, sizeBytes: 12 }],
+      open: async (_id: string, access: string) => ({
+        access,
+        header: header('s1', '/srv/project'),
+        read: async () => ({ eventState: 'detached', events: [
+          { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
+          { type: 'step/start', seq: 1, time: 2, data: { turn: 1, step: 1 } },
+        ] }),
+        append: async (events: unknown[]) => { appended.push(...events) },
+        flush: async () => { flushed = true },
+        close: async () => { closed = true },
+      }),
+    }
+    const ctx = { get: (name: string) => name === 'sessionPersistence' ? persistence : undefined } as unknown as Context
+    const store = new RemoteSessionStore(ctx, 'server-a', 'install-a')
+    const workspace = await store.createWorkspace('/srv/project', 'Project')
+    await expect(store.rename(workspace.id, 's1' as never, 'Renamed')).resolves.toEqual({ title: 'Renamed' })
+    expect(appended).toEqual([{
+      type: 'session/title',
+      seq: 2,
+      time: expect.any(Number),
+      data: { title: 'Renamed', messageSeqs: [], source: { kind: 'user' } },
+    }])
+    expect(flushed).toBe(true)
+    expect(closed).toBe(true)
+  })
+
+  it('refuses to rename a session that belongs to another workspace', async () => {
+    const persistence = {
+      list: async () => [{ header: header('s1', '/srv/other'), revision: 'r1' as never, sizeBytes: 12 }],
+      open: async () => ({
+        header: header('s1', '/srv/other'),
+        read: async () => ({ eventState: 'detached', events: [] }),
+        append: async () => {},
+        flush: async () => {},
+        close: async () => {},
+      }),
+    }
+    const ctx = { get: (name: string) => name === 'sessionPersistence' ? persistence : undefined } as unknown as Context
+    const store = new RemoteSessionStore(ctx, 'server-a', 'install-a')
+    const workspace = await store.createWorkspace('/srv/project', 'Project')
+    await expect(store.rename(workspace.id, 's1' as never, 'Renamed')).rejects.toThrow(/does not belong/)
+  })
+
   it('does not wrap official write ownership errors', async () => {
     const persistence = {
       list: async () => [],

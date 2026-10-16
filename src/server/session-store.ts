@@ -189,6 +189,48 @@ export class RemoteSessionStore {
     return results
   }
 
+  /**
+   * Rename one stored session **without opening it anywhere**.
+   *
+   * The official rename is a single `session/title` append with `source:
+   * {kind:'user'}` (log-only, latest wins); it needs a *live* session only
+   * because the shell's title service is session-scoped. On the remote plane the
+   * log is ours to append to, so this takes a write handle, reads the current
+   * length for the next contiguous `seq`, appends the one event, flushes it
+   * durable, and releases the handle — no session is opened, no agent is
+   * created, and nothing is revealed. The caller normalizes the text with the
+   * official normalizer before it gets here.
+   *
+   * A write handle is a lease: if another device is writing this session the
+   * open fails and the rename is refused rather than racing that writer.
+   */
+  async rename(workspaceId: WorkspaceId, sessionId: RemoteSessionId, title: string): Promise<{ title: string }> {
+    // Resolve the workspace first: a session of another workspace must not be
+    // reachable through this call.
+    const workspace = await this.workspace(workspaceId)
+    const handle = await this.persistence().open(sessionId as unknown as SessionId, 'write')
+    try {
+      if ((handle.header as SessionHeaderLike).cwd !== workspace.path) {
+        throw new Error(`session "${sessionId}" does not belong to workspace "${workspaceId}"`)
+      }
+      const { events } = await handle.read()
+      const next = events.length
+      await handle.append([{
+        type: 'session/title',
+        seq: next,
+        time: Date.now(),
+        data: { title, messageSeqs: [], source: { kind: 'user' } },
+      } as never])
+      await handle.flush()
+      // The folded title is cached against the artifact size, which this append
+      // just changed; drop it so the next read re-folds instead of racing.
+      this.titleCache.delete(String(sessionId))
+      return { title }
+    } finally {
+      await handle.close().catch(() => {})
+    }
+  }
+
   /** Fold one session's title from its log, reusing the cached entry when unchanged. */
   private async titleOf(id: RemoteSessionId, sizeBytes: number | undefined): Promise<RemoteSessionTitle> {
     const cached = this.titleCache.get(String(id))

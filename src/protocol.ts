@@ -17,6 +17,7 @@ export const REMOTE_METHODS = {
   createWorkspace: 'reg.create',
   listSessions: 'persist.list',
   listTitles: 'persist.titles',
+  renameSession: 'persist.rename',
   createSession: 'persist.create',
   openSession: 'persist.open',
   appendSession: 'persist.append',
@@ -76,6 +77,18 @@ export interface RemoteSessionTitle {
 
 export interface SessionTitlesRequest {
   workspaceId: WorkspaceId
+}
+
+/** Rename one stored session by appending a user `session/title` event. */
+export interface SessionRenameRequest {
+  workspaceId: WorkspaceId
+  sessionId: RemoteSessionId
+  /** Already normalized by the caller (the official title normalizer). */
+  title: string
+}
+
+export interface SessionRenameResponse {
+  title: string
 }
 
 export interface SessionOpenRequest {
