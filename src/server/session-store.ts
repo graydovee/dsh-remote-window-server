@@ -136,6 +136,22 @@ export class RemoteSessionStore {
       }))
   }
 
+  /**
+   * Which workspace owns one stored session, or undefined when the server has
+   * no such session. The routing persistence on the client needs this to open
+   * a session by id without knowing its workspace up front.
+   */
+  async locateSession(sessionId: RemoteSessionId): Promise<WorkspaceId | undefined> {
+    const snapshots = await this.persistence().list()
+    const found = snapshots.find(snapshot => String(snapshot.header.id) === String(sessionId))
+    if (found === undefined) return undefined
+    const cwd = (found.header as SessionHeaderLike).cwd
+    if (cwd === undefined) return undefined
+    const records = await this.records()
+    const record = records.find(candidate => candidate.path === cwd)
+    return record === undefined ? undefined : this.workspaceId(record.path)
+  }
+
   async createSession(workspaceId: WorkspaceId, header: SessionHeader): Promise<{ handleId: RemoteHandleId; header: SessionHeader }> {
     const workspace = await this.workspace(workspaceId)
     const handle = await this.persistence().create({ ...header, cwd: workspace.path })

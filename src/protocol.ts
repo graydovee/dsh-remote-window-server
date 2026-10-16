@@ -21,6 +21,7 @@ export const REMOTE_METHODS = {
   appendSession: 'persist.append',
   flushSession: 'persist.flush',
   closeSession: 'persist.close',
+  locateSession: 'persist.locate',
 } as const
 
 export interface ServerHelloRequest {
@@ -34,6 +35,17 @@ export interface ServerHelloResponse {
   installationId: string
   version: string
   workspacesRoot: string
+  /** Real home directory of the remote server process (used by the directory browser). */
+  home?: string
+}
+
+export interface SessionLocateRequest {
+  sessionId: RemoteSessionId
+}
+
+export interface SessionLocateResponse {
+  /** The owning workspace, or null when the server has no such session. */
+  workspaceId: WorkspaceId | null
 }
 
 export interface RemoteWorkspaceSummary {

@@ -12,7 +12,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough, type Readable, type Writable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
@@ -108,6 +108,7 @@ const remoteSessionCreateRequest = z.object({ workspaceId, header: z.record(z.st
 const remoteSessionOpenRequest = z.object({ workspaceId, sessionId, mode: z.enum(['read', 'write']) }).strict()
 const remoteSessionAppendRequest = z.object({ handleId: handleId, events: z.array(z.record(z.string(), z.unknown())) }).strict()
 const remoteSessionHandleRequest = z.object({ handleId }).strict()
+const remoteSessionLocateRequest = z.object({ sessionId }).strict()
 
 /** Options for one remote execution-world server. */
 export interface RemoteServerOptions {
@@ -325,6 +326,9 @@ export class RemoteExecutionServer {
         installationId: this.options.installationId ?? 'stdio',
         version: this.options.version ?? '0.4.0-dev',
         workspacesRoot: this.workspace,
+        // The directory browser's 主目录 shortcut: the server process runs as
+        // the remote user, so its home is the user's home.
+        home: homedir(),
       }
     }
     await this.started
@@ -364,6 +368,11 @@ export class RemoteExecutionServer {
       if (sessions === undefined) throw new Error('remote session persistence is not configured')
       const input = remoteSessionCreateRequest.parse(raw)
       return await sessions.createSession(input.workspaceId, input.header as never)
+    }
+    if (method === 'persist.locate') {
+      if (sessions === undefined) throw new Error('remote session persistence is not configured')
+      const input = remoteSessionLocateRequest.parse(raw)
+      return { workspaceId: await sessions.locateSession(input.sessionId) ?? null }
     }
     if (method === 'persist.open') {
       if (sessions === undefined) throw new Error('remote session persistence is not configured')
