@@ -8,6 +8,7 @@ import type {
   RemoteHandleId,
   RemoteSessionId,
   RemoteSessionSummary,
+  RemoteSessionTitle,
   RemoteWorkspaceSummary,
   WorkspaceId,
 } from '../protocol.ts'
@@ -32,6 +33,9 @@ interface SessionPersistenceLike extends SessionPersistence {
   open(id: SessionId, access: 'read' | 'write', options?: { signal?: AbortSignal }): Promise<SessionHandle>
 }
 
+/** Parallel artifact reads per titles call; keeps a large workspace responsive. */
+const TITLE_READ_CONCURRENCY = 4
+
 function asWorkspaceId(value: string): WorkspaceId {
   return value as WorkspaceId
 }
@@ -44,6 +48,20 @@ function asSessionId(value: string): RemoteSessionId {
   return value as RemoteSessionId
 }
 
+/** One log record as this module reads it: type, time, opaque data. */
+interface LooseEvent {
+  readonly type: string
+  readonly time: number
+  readonly data?: unknown
+}
+
+/** One session's folded title facts, cached against the artifact's size. */
+interface TitleCacheEntry {
+  readonly sizeBytes: number | undefined
+  readonly title: string
+  readonly updatedAt: number | undefined
+}
+
 /**
  * Server-side adapter around the official persistence and workspace services.
  * It owns no file format and no lock files: write ownership is provided by the
@@ -51,6 +69,8 @@ function asSessionId(value: string): RemoteSessionId {
  */
 export class RemoteSessionStore {
   private readonly handles = new Map<RemoteHandleId, SessionHandle>()
+  /** Folded titles by session id, invalidated by the artifact's reported size. */
+  private readonly titleCache = new Map<string, TitleCacheEntry>()
   private readonly localWorkspaces = new Map<string, WorkspaceRecordLike>()
   private loadedLocalIndex = false
 
@@ -134,6 +154,74 @@ export class RemoteSessionStore {
         createdAt: snapshot.header.createdAt,
         cwd: workspace.path,
       }))
+  }
+
+  /**
+   * Titles and last activity for one workspace's stored sessions.
+   *
+   * The title is a `session/title` event in the log (log-only, latest wins —
+   * the official projection folds it the same way), and the *client* dsh is what
+   * produces it: this server profile has no title plugin. Reading is therefore
+   * the only way to learn it, and it is cached against the artifact's
+   * `sizeBytes`, so an unchanged log is never read twice.
+   *
+   * Reads take a `read` handle: no write ownership is claimed, so this can run
+   * while a client is writing the same session.
+   */
+  async titles(workspaceId: WorkspaceId): Promise<readonly RemoteSessionTitle[]> {
+    const workspace = await this.workspace(workspaceId)
+    const snapshots = await this.persistence().list()
+    const mine = snapshots.filter(snapshot => (snapshot.header as SessionHeaderLike).cwd === workspace.path)
+    const results = new Array<RemoteSessionTitle>(mine.length)
+    let cursor = 0
+    // Bounded fan-out: each task opens and reads one artifact.
+    const worker = async (): Promise<void> => {
+      for (let index = cursor++; index < mine.length; index = cursor++) {
+        const snapshot = mine[index]
+        if (snapshot === undefined) continue
+        results[index] = await this.titleOf(
+          asSessionId(String(snapshot.header.id)),
+          snapshot.sizeBytes,
+        ).catch(() => ({ id: asSessionId(String(snapshot.header.id)), title: '' }))
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(TITLE_READ_CONCURRENCY, mine.length) }, worker))
+    return results
+  }
+
+  /** Fold one session's title from its log, reusing the cached entry when unchanged. */
+  private async titleOf(id: RemoteSessionId, sizeBytes: number | undefined): Promise<RemoteSessionTitle> {
+    const cached = this.titleCache.get(String(id))
+    if (cached !== undefined && sizeBytes !== undefined && cached.sizeBytes === sizeBytes) {
+      return {
+        id,
+        title: cached.title,
+        ...(cached.updatedAt === undefined ? {} : { updatedAt: cached.updatedAt }),
+      }
+    }
+    const handle = await this.persistence().open(id as unknown as SessionId, 'read')
+    try {
+      const { events } = await handle.read()
+      // `session/title` is a projection event contributed by the title plugin,
+      // which this server profile does not mount — so its type is not in the
+      // official union here, while the *client* dsh still writes it into this
+      // log. Read the log loosely rather than widening the official type.
+      const log = events as unknown as readonly LooseEvent[]
+      const titleEvent = log.findLast(event => event.type === 'session/title')
+      const data = titleEvent?.data as { title?: unknown } | undefined
+      const title = typeof data?.title === 'string' ? data.title : ''
+      const last = log[log.length - 1]
+      const updatedAt = last === undefined ? undefined : last.time
+      this.titleCache.set(String(id), { sizeBytes, title, updatedAt })
+      return { id, title, ...(updatedAt === undefined ? {} : { updatedAt }) }
+    } catch (error) {
+      // A session whose log cannot be read still has to be listed: the list is
+      // the panel's, and one unreadable artifact must not hide the rest.
+      if (error instanceof Error && /not.?found/i.test(error.message)) return { id, title: '' }
+      throw error
+    } finally {
+      await handle.close().catch(() => {})
+    }
   }
 
   /**

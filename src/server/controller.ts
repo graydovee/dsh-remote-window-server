@@ -324,7 +324,7 @@ export class RemoteExecutionServer {
         protocol: REMOTE_SESSION_PROTOCOL,
         serverId: this.options.serverId ?? 'ephemeral',
         installationId: this.options.installationId ?? 'stdio',
-        version: this.options.version ?? '0.1.0-alpha9',
+        version: this.options.version ?? '0.1.0-alpha12',
         workspacesRoot: this.workspace,
         // The directory browser's 主目录 shortcut: the server process runs as
         // the remote user, so its home is the user's home.
@@ -363,6 +363,10 @@ export class RemoteExecutionServer {
     if (method === 'persist.list') {
       if (sessions === undefined) throw new Error('remote session persistence is not configured')
       return await sessions.listSessions(remoteSessionListRequest.parse(raw).workspaceId)
+    }
+    if (method === 'persist.titles') {
+      if (sessions === undefined) throw new Error('remote session persistence is not configured')
+      return await sessions.titles(remoteSessionListRequest.parse(raw).workspaceId)
     }
     if (method === 'persist.create') {
       if (sessions === undefined) throw new Error('remote session persistence is not configured')

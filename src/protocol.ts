@@ -16,6 +16,7 @@ export const REMOTE_METHODS = {
   listWorkspaces: 'reg.list',
   createWorkspace: 'reg.create',
   listSessions: 'persist.list',
+  listTitles: 'persist.titles',
   createSession: 'persist.create',
   openSession: 'persist.open',
   appendSession: 'persist.append',
@@ -62,6 +63,19 @@ export interface RemoteSessionSummary {
   sizeBytes?: number
   createdAt?: number
   cwd: string
+}
+
+/** One stored session's display facts: the log's title and its last activity. */
+export interface RemoteSessionTitle {
+  id: RemoteSessionId
+  /** Latest `session/title` text; empty when the log carries no title event. */
+  title: string
+  /** Time of the log's last event (epoch ms); absent for an empty log. */
+  updatedAt?: number
+}
+
+export interface SessionTitlesRequest {
+  workspaceId: WorkspaceId
 }
 
 export interface SessionOpenRequest {
