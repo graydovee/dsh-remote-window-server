@@ -28,7 +28,7 @@ pnpm test         # vitest run（session-store 投影与所有权透传）
 pnpm build        # tsdown → lib/（server + protocol 两个 entry）
 # 发行包（staging：package.json + cordis.patch.yml + lib/server.js + lib/protocol.js
 # + manifest.json{protocol:2} → tar.gz + sha256）：
-node scripts/build-server-package.mjs --out <dir> --version 0.3.6
+node scripts/build-server-package.mjs --out <dir> --version 0.1.0-alpha1
 ```
 
 Node ≥ 22.19（或 ≥ 24）；只用 pnpm。`lib/` 是构建产物，不要手改。
