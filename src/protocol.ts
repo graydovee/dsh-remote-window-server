@@ -1,7 +1,10 @@
 /**
  * Client/server protocol shared with dsh-remote-workspace.
  * Keep this file byte-for-byte aligned with the client copy.
- * Protocol revision: 2 (Remote Session RPCs; official execution RPCs remain v1).
+ * Protocol revision: 3 (Remote Session RPCs; official execution RPCs remain v1).
+ *
+ * Revision 3 adds the server-authoritative workspace registry RPCs
+ * (`reg.rename`, `reg.delete`, `reg.list` activity) — see `doc/api-contract.md` §14.
  */
 
 export type Brand<T, B extends string> = T & { readonly __brand: B }
@@ -9,12 +12,14 @@ export type WorkspaceId = Brand<string, 'RemoteWorkspaceId'>
 export type RemoteSessionId = Brand<string, 'RemoteSessionId'>
 export type RemoteHandleId = Brand<string, 'RemoteSessionHandleId'>
 
-export const REMOTE_SESSION_PROTOCOL = 2 as const
+export const REMOTE_SESSION_PROTOCOL = 3 as const
 
 export const REMOTE_METHODS = {
   hello: 'server.hello',
   listWorkspaces: 'reg.list',
   createWorkspace: 'reg.create',
+  renameWorkspace: 'reg.rename',
+  deleteWorkspace: 'reg.delete',
   listSessions: 'persist.list',
   listTitles: 'persist.titles',
   renameSession: 'persist.rename',
@@ -41,6 +46,41 @@ export interface ServerHelloResponse {
   home?: string
 }
 
+/** `reg.list` request: activity is opt-in because it reads session logs. */
+export interface WorkspaceListRequest {
+  /** When true the reply carries `updatedAt` (folded from session logs, memoized by size). */
+  includeActivity?: boolean
+}
+
+/** Rename one workspace (id and path never change). */
+export interface WorkspaceRenameRequest {
+  id: WorkspaceId
+  title: string
+}
+
+export interface WorkspaceRenameResponse {
+  id: WorkspaceId
+  title: string
+}
+
+/**
+ * Remove one workspace **from the registry only**.
+ *
+ * `force` deletes the entry even when it still has sessions; the session logs
+ * under `~/.dsh/remote-server-sessions/**` are never touched, so re-creating the
+ * same path restores its `sessionCount`.
+ */
+export interface WorkspaceDeleteRequest {
+  id: WorkspaceId
+  force?: boolean
+}
+
+export interface WorkspaceDeleteResponse {
+  /** False when the id was not in the registry (idempotent delete). */
+  removed: boolean
+  sessionCount: number
+}
+
 export interface SessionLocateRequest {
   sessionId: RemoteSessionId
 }
@@ -56,6 +96,8 @@ export interface RemoteWorkspaceSummary {
   title: string
   sessionCount: number
   createdAt: string
+  /** Latest session-log event time in this workspace; only with `includeActivity`. */
+  updatedAt?: string
 }
 
 export interface RemoteSessionSummary {

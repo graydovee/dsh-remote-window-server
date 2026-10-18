@@ -14,6 +14,8 @@ import type {
 } from '../protocol.ts'
 
 interface WorkspaceRecordLike {
+  /** The registry's own identity, when the record carries one (used for best-effort deletes). */
+  readonly id?: string
   readonly path: string
   readonly title: string
   readonly createdAt?: string
@@ -22,7 +24,38 @@ interface WorkspaceRecordLike {
 interface WorkspaceRegistryLike {
   list(): readonly WorkspaceRecordLike[]
   create(path: string, title?: string): Promise<WorkspaceRecordLike>
+  /**
+   * Delete one registration while retaining its directory and every session —
+   * the official semantics this module relies on for `reg.delete` (A35).
+   */
+  delete?(id: string): Promise<unknown> | unknown
 }
+
+/**
+ * The server's workspace index, persisted next to the profile
+ * (`~/.dsh/remote-server/workspaces.json`).
+ *
+ * Three sections, because the official registry cannot carry all of them:
+ *
+ * - `local`   — workspaces for a profile that has **no** `workspaceRegistry`
+ *               (the old array-of-records file, kept for compatibility).
+ * - `overlay` — server-authoritative **title overrides** written by `reg.rename`
+ *               (the official registry has no rename we can rely on, and a rebuilt
+ *               registry must not lose the title — architecture A34).
+ * - `deleted` — tombstones written by `reg.delete`. A registry that keeps
+ *               re-materializing a path (e.g. a client that re-registers) must not
+ *               resurrect a workspace the user deleted on another device;
+ *               `reg.create` clears the tombstone for its path (contract §14.5).
+ */
+interface WorkspaceIndexDocument {
+  readonly version: 1
+  readonly local: readonly WorkspaceRecordLike[]
+  readonly overlay: Record<string, { readonly title: string; readonly updatedAt: string }>
+  readonly deleted: Record<string, { readonly deletedAt: string }>
+}
+
+/** Legal workspace ids: 16 lowercase hex, as `workspaceId()` produces. */
+const WORKSPACE_ID_PATTERN = /^[0-9a-f]{16}$/
 
 interface SessionHeaderLike extends SessionHeader {
   readonly cwd?: string
@@ -72,7 +105,11 @@ export class RemoteSessionStore {
   /** Folded titles by session id, invalidated by the artifact's reported size. */
   private readonly titleCache = new Map<string, TitleCacheEntry>()
   private readonly localWorkspaces = new Map<string, WorkspaceRecordLike>()
-  private loadedLocalIndex = false
+  /** `reg.rename` title overrides, keyed by workspace id. */
+  private readonly overlay = new Map<string, { title: string; updatedAt: string }>()
+  /** `reg.delete` tombstones, keyed by workspace id. */
+  private readonly deleted = new Map<string, { deletedAt: string }>()
+  private loadedIndex = false
 
   constructor(
     private readonly ctx: Context,
@@ -96,11 +133,34 @@ export class RemoteSessionStore {
     return asWorkspaceId(createHash('sha256').update(`${this.serverId}\0${path}`).digest('hex').slice(0, 16))
   }
 
+  /**
+   * Validate a workspace id from the wire, with the contract's message prefix.
+   * @param raw - the id as received.
+   * @returns the branded id.
+   */
+  private assertWorkspaceId(raw: string): WorkspaceId {
+    if (!WORKSPACE_ID_PATTERN.test(raw)) throw new Error(`invalid-workspace-id "${raw}"`)
+    return asWorkspaceId(raw)
+  }
+
+  /**
+   * Every workspace the server knows, after overrides and tombstones.
+   *
+   * Tombstoned entries are dropped here rather than at the call sites, so
+   * `reg.list`, session routing and `reg.rename` all agree on what exists.
+   */
   private async records(): Promise<readonly WorkspaceRecordLike[]> {
+    await this.loadIndex()
     const registry = this.registry()
-    if (registry !== undefined) return registry.list()
-    await this.loadLocalIndex()
-    return [...this.localWorkspaces.values()]
+    const base = registry !== undefined ? registry.list() : [...this.localWorkspaces.values()]
+    const out: WorkspaceRecordLike[] = []
+    for (const record of base) {
+      const id = String(this.workspaceId(record.path))
+      if (this.deleted.has(id)) continue
+      const override = this.overlay.get(id)
+      out.push(override === undefined ? record : { ...record, title: override.title })
+    }
+    return out
   }
 
   private async workspace(workspaceId: WorkspaceId): Promise<WorkspaceRecordLike> {
@@ -110,36 +170,110 @@ export class RemoteSessionStore {
     return found
   }
 
-  async listWorkspaces(): Promise<readonly RemoteWorkspaceSummary[]> {
+  /**
+   * The registry view of every workspace (`reg.list`).
+   * @param includeActivity - also fold each workspace's latest session activity
+   *   (`updatedAt`); reads session logs, so it is opt-in (contract §14.1).
+   */
+  async listWorkspaces(includeActivity = false): Promise<readonly RemoteWorkspaceSummary[]> {
     const sessions = await this.persistence().list()
     const records = await this.records()
-    return records.map(record => ({
-      id: this.workspaceId(record.path),
-      path: record.path,
-      title: record.title,
-      createdAt: record.createdAt ?? new Date(0).toISOString(),
-      sessionCount: sessions.filter(snapshot => (snapshot.header as SessionHeaderLike).cwd === record.path).length,
-    }))
+    const summaries: RemoteWorkspaceSummary[] = []
+    for (const record of records) {
+      const id = this.workspaceId(record.path)
+      const sessionCount = sessions.filter(snapshot => (snapshot.header as SessionHeaderLike).cwd === record.path).length
+      let updatedAt: string | undefined
+      if (includeActivity && sessionCount > 0) {
+        // `titles()` folds one log per session (memoized by artifact size), which
+        // is where the last-event time comes from; reuse it instead of a second
+        // log format.
+        const titles = await this.titles(id).catch(() => [])
+        const times = titles.map(entry => entry.updatedAt).filter((time): time is number => typeof time === 'number')
+        if (times.length > 0) updatedAt = new Date(Math.max(...times)).toISOString()
+      }
+      summaries.push({
+        id,
+        path: record.path,
+        title: record.title,
+        createdAt: record.createdAt ?? new Date(0).toISOString(),
+        sessionCount,
+        ...(updatedAt === undefined ? {} : { updatedAt }),
+      })
+    }
+    return summaries
   }
 
   async createWorkspace(path: string, title?: string): Promise<RemoteWorkspaceSummary> {
+    await this.loadIndex()
     const registry = this.registry()
-    if (registry === undefined) await this.loadLocalIndex()
     const record = registry === undefined
       ? (() => {
           const next = { path, title: title ?? path.split('/').filter(Boolean).at(-1) ?? path, createdAt: new Date().toISOString() }
           this.localWorkspaces.set(path, next)
-          void this.saveLocalIndex()
           return next
         })()
       : await registry.create(path, title)
+    const id = this.workspaceId(record.path)
+    // Contract §14.5: registering a path again clears its deletion tombstone (and
+    // its `sessionCount` comes back, because sessions are owned by `header.cwd`).
+    const cleared = this.deleted.delete(String(id))
+    if (registry === undefined || cleared) await this.saveIndex()
     return {
-      id: this.workspaceId(record.path),
+      id,
       path: record.path,
       title: record.title,
       createdAt: record.createdAt ?? new Date().toISOString(),
       sessionCount: 0,
     }
+  }
+
+  /**
+   * Rename one workspace: id and path never change, only the server-side title.
+   *
+   * Stored in this server's own index rather than the official registry, because
+   * the registry's rename API is not part of the surface this module can rely on
+   * and a rebuilt registry must not lose the title (architecture A34).
+   * @param workspaceId - the 16-hex workspace id.
+   * @param title - already-normalized non-empty title.
+   */
+  async renameWorkspace(workspaceId: WorkspaceId, title: string): Promise<{ id: WorkspaceId; title: string }> {
+    const id = this.assertWorkspaceId(String(workspaceId))
+    const normalized = title.trim()
+    if (normalized === '') throw new Error('invalid-title')
+    await this.workspace(id)
+    this.overlay.set(String(id), { title: normalized, updatedAt: new Date().toISOString() })
+    await this.saveIndex()
+    return { id, title: normalized }
+  }
+
+  /**
+   * Remove one workspace **from the registry only** (architecture A35).
+   *
+   * Session logs under `~/.dsh/remote-server-sessions/**` are never touched — that
+   * is what makes re-registering the same path restore its sessions. A tombstone
+   * is persisted so another client cannot resurrect the entry by re-registering
+   * the path before this server restarts; `reg.create` clears it deliberately.
+   * @param workspaceId - the 16-hex workspace id.
+   * @param force - delete even when the workspace still has sessions.
+   */
+  async removeWorkspace(workspaceId: WorkspaceId, force = false): Promise<{ removed: boolean; sessionCount: number }> {
+    const id = this.assertWorkspaceId(String(workspaceId))
+    const records = await this.records()
+    const record = records.find(candidate => this.workspaceId(candidate.path) === id)
+    // Idempotent: deleting an unknown (or already deleted) id is a success.
+    if (record === undefined) return { removed: false, sessionCount: 0 }
+    const sessionCount = (await this.persistence().list())
+      .filter(snapshot => (snapshot.header as SessionHeaderLike).cwd === record.path)
+      .length
+    if (!force && sessionCount > 0) throw new Error(`workspace-not-empty ${sessionCount}`)
+    // Best effort: drop the official registration when the registry exposes one.
+    // The official `delete` keeps the directory and every session, and the
+    // tombstone below is what actually decides membership for this server.
+    if (record.id !== undefined) await Promise.resolve(this.registry()?.delete?.(record.id)).catch(() => {})
+    this.overlay.delete(String(id))
+    this.deleted.set(String(id), { deletedAt: new Date().toISOString() })
+    await this.saveIndex()
+    return { removed: true, sessionCount }
   }
 
   async listSessions(workspaceId: WorkspaceId): Promise<readonly RemoteSessionSummary[]> {
@@ -349,26 +483,52 @@ export class RemoteSessionStore {
     return handle
   }
 
-  private async loadLocalIndex(): Promise<void> {
-    if (this.loadedLocalIndex || this.localIndexPath === undefined) return
-    this.loadedLocalIndex = true
+  /**
+   * Load the workspace index (local records, title overrides, tombstones).
+   *
+   * A legacy file is a bare array of local records (the pre-v3 layout), so it is
+   * accepted and upgraded in memory; the next save writes the versioned document.
+   */
+  private async loadIndex(): Promise<void> {
+    if (this.loadedIndex) return
+    this.loadedIndex = true
+    if (this.localIndexPath === undefined) return
+    let raw: unknown
     try {
-      const raw = JSON.parse(await readFile(this.localIndexPath, 'utf8')) as unknown
-      if (!Array.isArray(raw)) return
-      for (const value of raw) {
-        if (value !== null && typeof value === 'object' && typeof (value as { path?: unknown }).path === 'string') {
-          const record = value as WorkspaceRecordLike
-          this.localWorkspaces.set(record.path, record)
-        }
-      }
+      raw = JSON.parse(await readFile(this.localIndexPath, 'utf8'))
     } catch (error: unknown) {
-      if ((error as { code?: string }).code !== 'ENOENT') throw error
+      if ((error as { code?: string }).code === 'ENOENT') return
+      throw error
+    }
+    const asRecord = (value: unknown): value is WorkspaceRecordLike =>
+      value !== null && typeof value === 'object' && typeof (value as { path?: unknown }).path === 'string'
+    if (Array.isArray(raw)) {
+      for (const value of raw) if (asRecord(value)) this.localWorkspaces.set(value.path, value)
+      return
+    }
+    if (raw === null || typeof raw !== 'object') return
+    const document = raw as Partial<WorkspaceIndexDocument>
+    for (const value of document.local ?? []) if (asRecord(value)) this.localWorkspaces.set(value.path, value)
+    for (const [id, entry] of Object.entries(document.overlay ?? {})) {
+      if (typeof entry?.title === 'string' && entry.title !== '') {
+        this.overlay.set(id, { title: entry.title, updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : new Date().toISOString() })
+      }
+    }
+    for (const [id, entry] of Object.entries(document.deleted ?? {})) {
+      this.deleted.set(id, { deletedAt: typeof entry?.deletedAt === 'string' ? entry.deletedAt : new Date().toISOString() })
     }
   }
 
-  private async saveLocalIndex(): Promise<void> {
+  /** Persist the workspace index. */
+  private async saveIndex(): Promise<void> {
     if (this.localIndexPath === undefined) return
+    const document: WorkspaceIndexDocument = {
+      version: 1,
+      local: [...this.localWorkspaces.values()],
+      overlay: Object.fromEntries(this.overlay),
+      deleted: Object.fromEntries(this.deleted),
+    }
     await mkdir(dirname(this.localIndexPath), { recursive: true })
-    await writeFile(this.localIndexPath, JSON.stringify([...this.localWorkspaces.values()]) + '\n', { mode: 0o600 })
+    await writeFile(this.localIndexPath, `${JSON.stringify(document)}\n`, { mode: 0o600 })
   }
 }
