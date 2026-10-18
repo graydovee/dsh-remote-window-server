@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
@@ -109,7 +109,17 @@ export class RemoteSessionStore {
   private readonly overlay = new Map<string, { title: string; updatedAt: string }>()
   /** `reg.delete` tombstones, keyed by workspace id. */
   private readonly deleted = new Map<string, { deletedAt: string }>()
-  private loadedIndex = false
+  /**
+   * Identity of the index file as last read or written.
+   *
+   * Two clients mean **two server processes** over one `workspaces.json`, so the
+   * in-memory copy is only a cache: `stat` before every read tells us whether
+   * another process wrote it (alpha60: a delete/rename on one connection never
+   * reached the other until it restarted).
+   */
+  private indexStamp: { mtimeMs: number; size: number } | undefined
+  /** Serializes this process's own index writes (read-modify-write must not interleave). */
+  private indexWriteQueue: Promise<unknown> = Promise.resolve()
 
   constructor(
     private readonly ctx: Context,
@@ -150,7 +160,7 @@ export class RemoteSessionStore {
    * `reg.list`, session routing and `reg.rename` all agree on what exists.
    */
   private async records(): Promise<readonly WorkspaceRecordLike[]> {
-    await this.loadIndex()
+    await this.refreshIndex()
     const registry = this.registry()
     const base = registry !== undefined ? registry.list() : [...this.localWorkspaces.values()]
     const out: WorkspaceRecordLike[] = []
@@ -204,27 +214,31 @@ export class RemoteSessionStore {
   }
 
   async createWorkspace(path: string, title?: string): Promise<RemoteWorkspaceSummary> {
-    await this.loadIndex()
-    const registry = this.registry()
-    const record = registry === undefined
-      ? (() => {
-          const next = { path, title: title ?? path.split('/').filter(Boolean).at(-1) ?? path, createdAt: new Date().toISOString() }
-          this.localWorkspaces.set(path, next)
-          return next
-        })()
-      : await registry.create(path, title)
-    const id = this.workspaceId(record.path)
-    // Contract §14.5: registering a path again clears its deletion tombstone (and
-    // its `sessionCount` comes back, because sessions are owned by `header.cwd`).
-    const cleared = this.deleted.delete(String(id))
-    if (registry === undefined || cleared) await this.saveIndex()
-    return {
-      id,
-      path: record.path,
-      title: record.title,
-      createdAt: record.createdAt ?? new Date().toISOString(),
-      sessionCount: 0,
-    }
+    // Read-modify-write under the process's write queue, and against the newest
+    // disk state: another server process may have registered or deleted something
+    // since our last read (alpha60).
+    return await this.runIndexWrite(async () => {
+      const registry = this.registry()
+      const record = registry === undefined
+        ? (() => {
+            const next = { path, title: title ?? path.split('/').filter(Boolean).at(-1) ?? path, createdAt: new Date().toISOString() }
+            this.localWorkspaces.set(path, next)
+            return next
+          })()
+        : await registry.create(path, title)
+      const id = this.workspaceId(record.path)
+      // Contract §14.5: registering a path again clears its deletion tombstone (and
+      // its `sessionCount` comes back, because sessions are owned by `header.cwd`).
+      const cleared = this.deleted.delete(String(id))
+      if (registry === undefined || cleared) await this.saveIndex()
+      return {
+        id,
+        path: record.path,
+        title: record.title,
+        createdAt: record.createdAt ?? new Date().toISOString(),
+        sessionCount: 0,
+      }
+    })
   }
 
   /**
@@ -240,10 +254,12 @@ export class RemoteSessionStore {
     const id = this.assertWorkspaceId(String(workspaceId))
     const normalized = title.trim()
     if (normalized === '') throw new Error('invalid-title')
-    await this.workspace(id)
-    this.overlay.set(String(id), { title: normalized, updatedAt: new Date().toISOString() })
-    await this.saveIndex()
-    return { id, title: normalized }
+    return await this.runIndexWrite(async () => {
+      await this.workspace(id)
+      this.overlay.set(String(id), { title: normalized, updatedAt: new Date().toISOString() })
+      await this.saveIndex()
+      return { id, title: normalized }
+    })
   }
 
   /**
@@ -258,6 +274,11 @@ export class RemoteSessionStore {
    */
   async removeWorkspace(workspaceId: WorkspaceId, force = false): Promise<{ removed: boolean; sessionCount: number }> {
     const id = this.assertWorkspaceId(String(workspaceId))
+    return await this.runIndexWrite(async () => await this.removeWorkspaceLocked(id, force))
+  }
+
+  /** The body of {@link removeWorkspace}, already inside the write queue. */
+  private async removeWorkspaceLocked(id: WorkspaceId, force: boolean): Promise<{ removed: boolean; sessionCount: number }> {
     const records = await this.records()
     const record = records.find(candidate => this.workspaceId(candidate.path) === id)
     // Idempotent: deleting an unknown (or already deleted) id is a success.
@@ -484,42 +505,97 @@ export class RemoteSessionStore {
   }
 
   /**
-   * Load the workspace index (local records, title overrides, tombstones).
+   * Re-read the workspace index **when the file changed on disk**.
    *
-   * A legacy file is a bare array of local records (the pre-v3 layout), so it is
-   * accepted and upgraded in memory; the next save writes the versioned document.
+   * Two clients connected to the same server are two *processes*, both reading the
+   * same `workspaces.json`. The in-memory copy is therefore a cache, not the
+   * truth: alpha60 showed a workspace deleted on one connection still listed on
+   * the other until that one restarted. A `stat` before every read keeps the hot
+   * path cheap while making cross-process changes visible on the next call.
+   *
+   * A legacy file is a bare array of local records (the pre-v3 layout): it is
+   * accepted and upgraded in memory, and the next save writes the versioned
+   * document.
    */
-  private async loadIndex(): Promise<void> {
-    if (this.loadedIndex) return
-    this.loadedIndex = true
+  private async refreshIndex(): Promise<void> {
     if (this.localIndexPath === undefined) return
+    const info = await stat(this.localIndexPath).catch(() => undefined)
+    if (info === undefined) {
+      // No file (first run, or another process removed it): forget the cache so a
+      // stale copy can never outlive the file it came from.
+      this.localWorkspaces.clear()
+      this.overlay.clear()
+      this.deleted.clear()
+      this.indexStamp = undefined
+      return
+    }
+    const stamp = { mtimeMs: info.mtimeMs, size: info.size }
+    if (this.indexStamp !== undefined && this.indexStamp.mtimeMs === stamp.mtimeMs && this.indexStamp.size === stamp.size) return
     let raw: unknown
     try {
       raw = JSON.parse(await readFile(this.localIndexPath, 'utf8'))
     } catch (error: unknown) {
+      // A half-written file (another process died mid-write) must not poison the
+      // cache: keep the last good state and retry on the next access.
       if ((error as { code?: string }).code === 'ENOENT') return
-      throw error
+      console.error(`[dsh-remote-workspace] workspace index is unreadable, keeping the previous state: ${String((error as Error).message ?? error)}`)
+      return
     }
+    this.localWorkspaces.clear()
+    this.overlay.clear()
+    this.deleted.clear()
     const asRecord = (value: unknown): value is WorkspaceRecordLike =>
       value !== null && typeof value === 'object' && typeof (value as { path?: unknown }).path === 'string'
     if (Array.isArray(raw)) {
       for (const value of raw) if (asRecord(value)) this.localWorkspaces.set(value.path, value)
+      this.indexStamp = stamp
       return
     }
-    if (raw === null || typeof raw !== 'object') return
-    const document = raw as Partial<WorkspaceIndexDocument>
-    for (const value of document.local ?? []) if (asRecord(value)) this.localWorkspaces.set(value.path, value)
-    for (const [id, entry] of Object.entries(document.overlay ?? {})) {
-      if (typeof entry?.title === 'string' && entry.title !== '') {
-        this.overlay.set(id, { title: entry.title, updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : new Date().toISOString() })
+    if (raw !== null && typeof raw === 'object') {
+      const document = raw as Partial<WorkspaceIndexDocument>
+      for (const value of document.local ?? []) if (asRecord(value)) this.localWorkspaces.set(value.path, value)
+      for (const [id, entry] of Object.entries(document.overlay ?? {})) {
+        if (typeof entry?.title === 'string' && entry.title !== '') {
+          this.overlay.set(id, { title: entry.title, updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : new Date().toISOString() })
+        }
+      }
+      for (const [id, entry] of Object.entries(document.deleted ?? {})) {
+        this.deleted.set(id, { deletedAt: typeof entry?.deletedAt === 'string' ? entry.deletedAt : new Date().toISOString() })
       }
     }
-    for (const [id, entry] of Object.entries(document.deleted ?? {})) {
-      this.deleted.set(id, { deletedAt: typeof entry?.deletedAt === 'string' ? entry.deletedAt : new Date().toISOString() })
-    }
+    this.indexStamp = stamp
   }
 
-  /** Persist the workspace index. */
+  /**
+   * Run one index mutation exclusively: after the previous one settled, and after
+   * re-reading the newest disk state.
+   *
+   * Two requests inside one process could otherwise interleave their
+   * read-modify-write and lose an entry; the queue is the in-process half of the
+   * locking story (the cross-process half is the stamp check plus the atomic
+   * rename in {@link saveIndex}).
+   * @param mutate - the mutation to run against fresh state.
+   */
+  private async runIndexWrite<T>(mutate: () => Promise<T>): Promise<T> {
+    const run = this.indexWriteQueue.then(async () => {
+      await this.refreshIndex()
+      return await mutate()
+    }, async () => {
+      await this.refreshIndex()
+      return await mutate()
+    })
+    // The queue tail never rejects: one failed write must not poison the next.
+    this.indexWriteQueue = run.then(() => undefined, () => undefined)
+    return await run
+  }
+
+  /**
+   * Persist the workspace index **atomically**.
+   *
+   * Written to `<file>.tmp-<pid>-<rand>` and renamed over the target, so a
+   * concurrent reader in another process sees either the old file or the new one,
+   * never a half-written JSON document.
+   */
   private async saveIndex(): Promise<void> {
     if (this.localIndexPath === undefined) return
     const document: WorkspaceIndexDocument = {
@@ -529,6 +605,12 @@ export class RemoteSessionStore {
       deleted: Object.fromEntries(this.deleted),
     }
     await mkdir(dirname(this.localIndexPath), { recursive: true })
-    await writeFile(this.localIndexPath, `${JSON.stringify(document)}\n`, { mode: 0o600 })
+    const temporary = `${this.localIndexPath}.tmp-${process.pid}-${randomUUID().slice(0, 8)}`
+    await writeFile(temporary, `${JSON.stringify(document)}\n`, { mode: 0o600 })
+    await rename(temporary, this.localIndexPath)
+    // Record what we just wrote, so our own next read does not re-parse it.
+    this.indexStamp = await stat(this.localIndexPath)
+      .then(info => ({ mtimeMs: info.mtimeMs, size: info.size }))
+      .catch(() => undefined)
   }
 }
