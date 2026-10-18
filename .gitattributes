@@ -1,0 +1,31 @@
+# Line-ending policy for every checkout of this repository.
+#
+# Measured problem (2026-10-19): a Windows checkout runs with
+# `core.autocrlf=true` and therefore writes CRLF into the working tree, while
+# the same clone read from WSL/Linux has `core.autocrlf` unset. That git then
+# reports every text file as modified even though the index is already all-LF;
+# `git diff --ignore-cr-at-eol` shows that nothing but the line endings differ.
+# `* text=auto` makes git normalize on the way into the index and on the way out
+# to the comparison, so both sides agree on what "modified" means without
+# forcing anybody's editor or checkout style.
+#
+# Deliberately NOT `eol=lf`: that would rewrite the CRLF files a Windows
+# checkout already has, turning the same phantom diff into a real one there.
+* text=auto
+
+# Never normalize binary artifacts.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.tgz binary
+*.tar.gz binary
+*.zip binary
+*.zst binary
+*.gz binary
+*.asar binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
