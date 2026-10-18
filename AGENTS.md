@@ -82,6 +82,11 @@ conformance 测试跑的就是这份副本，且 client provisioner 当前部署
   响应必须先于进程退出刷出（PLAN d5）；`exitOnClose` 默认 true。
 - `src/server/controller.ts`：官方方法集 + Remote Session RPC 的分发；wire 边界
   一律 zod 校验；官方整文/读取上限（`MAX_TEXT_BYTES` 8 MiB 等）在这侧重放。
+  **`hello` 的形状跟着 dsh-ssh 走**：0.2.1-rc.2 起是
+  `{ protocol, hash, kind: 'node-script' | 'executable', platform, nodeVersion, executable, root, workspace, bootstrapHash? }`
+  ——旧的 `node` 字段已删，且 schema 是 `$strict`，发旧形状会在 `.parse` 直接抛。
+  本行是 `lib/server.js` 由部署的 node 执行，所以发 `kind: 'node-script'` +
+  `executable: process.execPath`。
 - `src/server/session-store.ts`：官方 persistence 与 `workspaceRegistry`（或
   standalone `workspaces.json` 索引）之上的适配层。
   `workspaceId = sha256(serverId + NUL + 远端规范路径)` —— 跨设备稳定；
@@ -132,8 +137,11 @@ conformance 测试跑的就是这份副本，且 client provisioner 当前部署
   `allowImportingTsExtensions`：相对导入带 `.ts` 后缀；type-only 用 `import type`。
 - 可选 wire 字段沿用条件展开惯用法 `...(x === undefined ? {} : { x })`。
 - 注释解释**实测约束**；适用时注明对应的 PLAN 偏差编号。
-- peer 依赖是官方 `>=0.2.0-rc.1 <0.3.0` 包；不 vendor 官方源码（REFACTOR-BRIEF
+- peer 依赖是官方 `>=0.2.1-rc.2 <0.3.0` 包（下限即实测基线：0.2.1-rc.2 的
+  `hello` 契约与 `apply()` 挂载式 JSONL 后端）；不 vendor 官方源码（REFACTOR-BRIEF
   §3.2 的 vendor 方案最终未采用，改为 peer 依赖 + profile patch 挂官方包）。
+- `zod` 与 harness 用**同一个确切版本**（0.2.1-rc.2 是 `4.4.3`，别写 `^`）：树里出现
+  两份 zod 会让 `z.infer` 跨副本交叉推导，任何 typecheck 都会 OOM。
 - `session/title` 这类**官方投影事件**的类型在本包的 `SessionEvent` 联合里可能不存在
   （投影插件未挂载），读日志时用局部松散类型（`{type, time, data}`）而不是去拓宽官方类型。
 - 生命周期资源一律 `ctx.effect` 注册，随 fiber 销毁。
