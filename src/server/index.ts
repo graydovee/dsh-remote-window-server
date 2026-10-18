@@ -10,6 +10,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { RemoteExecutionServer } from './controller.ts'
 import { RemoteSessionStore } from './session-store.ts'
+import { REMOTE_SESSION_PROTOCOL } from '../protocol.ts'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -50,7 +51,7 @@ export const Config: Schema<Config> = Schema.object({
   exitOnClose: Schema.boolean().default(true).description('Exit the process after the client closes the channel.'),
   serverId: Schema.string().default('').description('Stable server identity; generated when empty.'),
   installationId: Schema.string().default('').description('Installation identity used for multi-instance discovery.'),
-  version: Schema.string().default('0.1.0-alpha59').description('Remote server plugin version.'),
+  version: Schema.string().default('0.1.0-alpha60').description('Remote server plugin version.'),
   identityFile: Schema.string().default('').description('Stable identity file for this installation.'),
   workspaceIndex: Schema.string().default('').description('Standalone workspace index file.'),
   statusFile: Schema.string().default('').description('Instance discovery manifest path.'),
@@ -83,8 +84,10 @@ export function apply(ctx: Context, config: Config): void {
     writeFileSync(statusFile, JSON.stringify({
       serverId,
       installationId,
-      version: config.version ?? '0.1.0-alpha59',
-      protocol: 2,
+      version: config.version ?? '0.1.0-alpha60',
+      // The announcement must match what the handshake enforces: a hard-coded 2
+      // here told QA protocol: 2 while the server spoke 3 (alpha59).
+      protocol: REMOTE_SESSION_PROTOCOL,
       transport: 'stdio',
       pid: process.pid,
     }) + '\n', { mode: 0o600 })
