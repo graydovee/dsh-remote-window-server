@@ -175,3 +175,6 @@ done
 `git checkout -- package.json src/server/index.ts && pnpm build` 还原工作树。
 
 server 运行时包不随插件版本发：它按 `server-v<dsh 版本>` 打 tag，见上文「发布流程」。
+
+**这套修订后缀只写在本文件（开发约定）。README 面向使用者，只讲发布版本与 tag，不要出现
+`0.1.0-alpha1.x` 这类开发号。**
