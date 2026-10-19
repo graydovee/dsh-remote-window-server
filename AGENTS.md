@@ -137,9 +137,10 @@ conformance 测试跑的就是这份副本，且 client provisioner 当前部署
   `allowImportingTsExtensions`：相对导入带 `.ts` 后缀；type-only 用 `import type`。
 - 可选 wire 字段沿用条件展开惯用法 `...(x === undefined ? {} : { x })`。
 - 注释解释**实测约束**；适用时注明对应的 PLAN 偏差编号。
-- peer 依赖是官方 `>=0.2.1-rc.2 <0.3.0` 包（下限即实测基线：0.2.1-rc.2 的
-  `hello` 契约与 `apply()` 挂载式 JSONL 后端）；不 vendor 官方源码（REFACTOR-BRIEF
-  §3.2 的 vendor 方案最终未采用，改为 peer 依赖 + profile patch 挂官方包）。
+- `engines.dsh` 与全部 `@deepseek-ai/dsh-*` peer 都写**精确值 `0.2.1-rc.2`**，不写区间：
+  0.2.1-rc.2 是唯一实测基线（`hello` 契约与 `apply()` 挂载式 JSONL 后端），替 0.2.2 提前
+  担保就是把未测版本当已测。不 vendor 官方源码（REFACTOR-BRIEF §3.2 的 vendor 方案最终
+  未采用，改为 peer 依赖 + profile patch 挂官方包）。
 - `zod` 与 harness 用**同一个确切版本**（0.2.1-rc.2 是 `4.4.3`，别写 `^`）：树里出现
   两份 zod 会让 `z.infer` 跨副本交叉推导，任何 typecheck 都会 OOM。
 - `session/title` 这类**官方投影事件**的类型在本包的 `SessionEvent` 联合里可能不存在
