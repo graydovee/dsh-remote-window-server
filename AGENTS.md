@@ -115,7 +115,7 @@ Remote Session RPC（协议 3）：`server.hello`、`reg.list|create|rename|dele
 
 编码规约：TS strict + `noUncheckedIndexedAccess` + `verbatimModuleSyntax` +
 `allowImportingTsExtensions`（相对导入带 `.ts`）；type-only 用 `import type`；可选 wire 字段
-沿用 `...(x === undefined ? {} : { x })`；注释写**实测约束**，适用时注明 PLAN 偏差编号。
+沿用 `...(x === undefined ? {} : { x })`；注释写**实测约束**（现象 + 结论），不写废话。
 `session/title` 这类官方投影事件的类型在本包 `SessionEvent` 联合里可能不存在（投影插件未挂载），
 读日志用局部松散类型 `{type, time, data}`，不要去拓宽官方类型。生命周期资源一律 `ctx.effect`。
 
