@@ -164,9 +164,14 @@ done
 
 ## 版本策略
 
-与 client 对齐：**仓库里的版本 = 发布 tag（当前 `v0.1.0-alpha1`）**，两个仓库保持一致。
-`0.1.0-alphaN` 的 `alphaN` 只是**本地部署计数器**，用来让插件批量 URL（`&rev=<hash>`）
-破缓存；它随部署一起 bump，**只留本机，不提交、不推送、不发布**。提交进仓库的
-`package.json`、`src/server/index.ts` 版本串与 `lib/` 始终是发布版本。
+与 client 对齐：**仓库里的版本 = 发布版本，当前 `v0.1.0-alpha1`**，两个仓库保持一致。
+
+本地调试部署时**不改发布版本号，只加修订后缀**：`0.1.0-alpha1.1`、`0.1.0-alpha1.2`……
+只在执行部署的那台机器上加；`status.json` 与 `server.hello.version` 报的就是它，且后缀必须
+加在 `pnpm build` **之前**（兜底版本号被编译进 `lib/server.js`）。
+
+**这些临时版本永不推送到远程**：不提交、不 push、不打 tag、不发布。提交进仓库的
+`package.json`、`src/server/index.ts` 版本串与 `lib/` 始终是发布版本；部署完用
+`git checkout -- package.json src/server/index.ts && pnpm build` 还原工作树。
 
 server 运行时包不随插件版本发：它按 `server-v<dsh 版本>` 打 tag，见上文「发布流程」。

@@ -79,6 +79,13 @@ exactly one `@deepseek-ai/dsh` version**, and the tag names that version. The ex
 `engines.dsh` above describes what this source tree supports; a given tarball is built against
 one release, and both are advanced together in one release.
 
+Local debugging of this half uses a **revision suffix on the release version** —
+`0.1.0-alpha1.1`, `0.1.0-alpha1.2`, … — bumped on the deploying machine (it is what
+`status.json` and `server.hello.version` report, and it must be bumped before `pnpm build`
+because the fallback is compiled into `lib/server.js`). **Those suffixes are local only: never
+pushed, never tagged, never published.** The committed `package.json`, the embedded version
+strings and `lib/` stay on the release version, `v0.1.0-alpha1`.
+
 ## How it is deployed
 
 The client provisions the host in five steps (everything is `/bin/sh -c` with absolute paths;

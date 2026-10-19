@@ -71,6 +71,12 @@ profile 会把本插件的行判为拒绝、不挂载（client 侧表现为连�
 精确 `engines.dsh` 描述的是这棵源码树支持什么；具体某个 tarball 是对着某一个 release 构建的，
 两者在同一次发布里一起前进。
 
+本地调试这个半边时，版本号用**发布版本 + 修订后缀**：`0.1.0-alpha1.1`、`0.1.0-alpha1.2`……
+只在执行部署的机器上加（`status.json` 与 `server.hello.version` 报的就是它；必须在
+`pnpm build` **之前** 加，因为兜底版本号会被编译进 `lib/server.js`）。**这些后缀只属于
+本地：永不推送、永不打 tag、永不发布。** 提交进仓库的 `package.json`、内嵌版本串与
+`lib/` 始终是发布版本 `v0.1.0-alpha1`。
+
 ## How it is deployed
 
 client 分五步把主机准备好（一律 `/bin/sh -c` + 绝对路径，不使用远端的 `PATH`、登录 shell 或
