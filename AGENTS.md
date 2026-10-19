@@ -164,5 +164,9 @@ done
 
 ## 版本策略
 
-与 client 对齐：未发版前一律 `0.1.0-alphaN`（不要 `0.x.y`），两边的版本号保持一致。
-发布后再打 tag / release；目前两个仓库都**没有** tag（也没建 release）。
+与 client 对齐：**仓库里的版本 = 发布 tag（当前 `v0.1.0-alpha1`）**，两个仓库保持一致。
+`0.1.0-alphaN` 的 `alphaN` 只是**本地部署计数器**，用来让插件批量 URL（`&rev=<hash>`）
+破缓存；它随部署一起 bump，**只留本机，不提交、不推送、不发布**。提交进仓库的
+`package.json`、`src/server/index.ts` 版本串与 `lib/` 始终是发布版本。
+
+server 运行时包不随插件版本发：它按 `server-v<dsh 版本>` 打 tag，见上文「发布流程」。

@@ -6,7 +6,8 @@ This plugin runs *inside a DSH runtime on the SSH host*. It answers the official
 execution-world method set, adds the Remote Session RPCs, and keeps session logs on the
 remote machine. The client keeps the agent loop, models, credentials and UI locally.
 
-- Package `dsh-remote-workspace-server@0.1.0-alpha68` — bundle plugin, `manifestVersion: 1`
+- Bundle plugin, `manifestVersion: 1`
+- Release: [`v0.1.0-alpha1`](https://github.com/graydovee/dsh-remote-workspace/tree/v0.1.0-alpha1) (both halves share the plugin version)
 - Client half: [`dsh-remote-workspace`](https://github.com/graydovee/dsh-remote-workspace)
 - Chinese: [README-zh.md](README-zh.md)
 
@@ -67,7 +68,7 @@ exemption in the profile's `compatibility.json` (`dsh plugin --profile <p> allow
 
 | Artifact | Version axis | Who consumes it |
 | --- | --- | --- |
-| `lib/server.js` + `cordis.patch.yml` (this npm package) | `0.1.0-alphaN` (plugin version) | Uploaded by the client into the profile's `node_modules/dsh-remote-workspace` |
+| `lib/server.js` + `cordis.patch.yml` (this npm package) | the plugin release (`v0.1.0-alpha1`) | Uploaded by the client into the profile's `node_modules/dsh-remote-workspace` |
 | `dsh-remote-server-<dshVersion>-<platform>.tar.gz` (runtime package) | `server-v<dsh version>` release tag | Downloaded by the client, or staged locally |
 
 A runtime package is the staged `@deepseek-ai/dsh` dependency tree for **one target

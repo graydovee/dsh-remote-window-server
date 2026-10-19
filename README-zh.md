@@ -5,7 +5,8 @@
 本插件运行在 **SSH 主机上的 DSH 运行时里**：应答官方 SSH 执行世界方法集，叠加 Remote
 Session RPC，并把会话日志留在远端机器。client 侧只保留 agent loop、模型、凭据与 UI。
 
-- 包：`dsh-remote-workspace-server@0.1.0-alpha68` —— bundle 插件，`manifestVersion: 1`
+- bundle 插件，`manifestVersion: 1`
+- 发布：[`v0.1.0-alpha1`](https://github.com/graydovee/dsh-remote-workspace/tree/v0.1.0-alpha1)（两个半边共用同一插件版本）
 - client 半边：[`dsh-remote-workspace`](https://github.com/graydovee/dsh-remote-workspace)
 - English: [README.md](README.md)
 
@@ -61,7 +62,7 @@ profile 会把本插件的行判为拒绝、不挂载（client 侧表现为连�
 
 | 产物 | 版本轴 | 消费方 |
 | --- | --- | --- |
-| `lib/server.js` + `cordis.patch.yml`（本 npm 包） | `0.1.0-alphaN`（插件版本） | client 上传进 profile 的 `node_modules/dsh-remote-workspace` |
+| `lib/server.js` + `cordis.patch.yml`（本 npm 包） | 插件发布版本（`v0.1.0-alpha1`） | client 上传进 profile 的 `node_modules/dsh-remote-workspace` |
 | `dsh-remote-server-<dshVersion>-<platform>.tar.gz`（运行时包） | release tag `server-v<dsh 版本>` | client 下载，或在本机暂存 |
 
 运行时包是**为某一目标平台/架构**暂存好的 `@deepseek-ai/dsh` 依赖树：装好该平台的原生绑定、
