@@ -1,0 +1,117 @@
+# Build the dsh runtime packages this project's server runs inside, and attach
+# them to a GitHub Release **of this repository**.
+#
+# The plugin downloads one of these from
+#   https://github.com/graydovee/dsh-remote-workspace-server/releases/download/<tag>/<asset>
+# and verifies it against the `.sha256` companion, so both files must be
+# attached. Tag convention: `server-v<dsh version>` (e.g. `server-v0.2.1-rc.2`) —
+# the packages are built against a dsh version, not against the plugin version.
+#
+# Matrix: linux x64/arm64 (glibc) and darwin x64/arm64. There is deliberately no
+# Windows entry: the remote world is POSIX — every provisioning script is
+# /bin/sh + tar + chmod, and the packaging module's artifactTag() only accepts
+# linux|darwin. A Windows remote would need its own deployer first.
+name: server-packages
+
+on:
+  push:
+    tags: ['server-v*']
+  workflow_dispatch:
+    inputs:
+      dsh_version:
+        description: '@deepseek-ai/dsh version to stage'
+        required: true
+        default: '0.2.1-rc.2'
+      release_tag:
+        description: 'tag to attach the assets to (must already exist)'
+        required: true
+        default: 'server-v0.2.1-rc.2'
+
+permissions:
+  contents: write
+
+env:
+  DSH_VERSION: ${{ inputs.dsh_version || '0.2.1-rc.2' }}
+
+jobs:
+  build:
+    name: build ${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.libc && format('-{0}', matrix.libc) || '' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            arch: x64
+            libc: gnu
+          - platform: linux
+            arch: arm64
+            libc: gnu
+          - platform: darwin
+            arch: x64
+            libc: ''
+          - platform: darwin
+            arch: arm64
+            libc: ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # The build drives `node <pnpm.cjs> -C <stage> add @deepseek-ai/dsh`, so it
+      # needs a pnpm *file* plus a node binary, not a PATH shim.
+      - name: host toolchain
+        run: |
+          set -euo pipefail
+          npm install -g pnpm@10
+          PNPM_CJS="$(npm root -g)/pnpm/bin/pnpm.cjs"
+          test -f "$PNPM_CJS" || { echo "pnpm.cjs not found under $(npm root -g)" >&2; exit 1; }
+          echo "DSH_HOST_NODE=$(command -v node)" >> "$GITHUB_ENV"
+          echo "DSH_HOST_PNPM=$PNPM_CJS" >> "$GITHUB_ENV"
+          node --version
+          node "$PNPM_CJS" --version
+
+      - name: build package
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--dsh-version "$DSH_VERSION" --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}" --out dist-server)
+          if [ -n "${{ matrix.libc }}" ]; then args+=(--libc "${{ matrix.libc }}"); fi
+          node scripts/build-server-package.mjs "${args[@]}"
+          ls -l dist-server
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.libc && format('-{0}', matrix.libc) || '' }}
+          path: |
+            dist-server/*.tar.gz
+            dist-server/*.tar.gz.sha256
+            dist-server/*.manifest.json
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-server
+          merge-multiple: true
+
+      - name: list assets
+        run: ls -l dist-server
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name != '' && github.ref_name || inputs.release_tag }}
+          name: server packages for dsh ${{ env.DSH_VERSION }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist-server/*.tar.gz
+            dist-server/*.tar.gz.sha256
+            dist-server/*.manifest.json
