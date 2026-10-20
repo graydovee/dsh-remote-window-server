@@ -63,8 +63,6 @@ jobs:
       # The plugin sources must be green before their runtime is packaged; a tag
       # on a broken tree would publish artifacts nobody can reproduce.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: check sources
         run: |
