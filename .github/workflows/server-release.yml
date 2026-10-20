@@ -15,7 +15,7 @@ name: server-packages
 
 on:
   push:
-    tags: ['server-v*']
+    tags: ['server-v*', 'v*']
   workflow_dispatch:
     inputs:
       dsh_version:
@@ -59,6 +59,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+
+      # The plugin sources must be green before their runtime is packaged; a tag
+      # on a broken tree would publish artifacts nobody can reproduce.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: check sources
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm typecheck
+          pnpm test
+          pnpm build
 
       # The build drives `node <pnpm.cjs> -C <stage> add @deepseek-ai/dsh`, so it
       # needs a pnpm *file* plus a node binary, not a PATH shim.
