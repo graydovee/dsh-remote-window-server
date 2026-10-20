@@ -2,96 +2,161 @@
 
 English | [中文](README-zh.md)
 
-The remote half of [dsh-remote-workspace](https://github.com/graydovee/dsh-remote-workspace). It
-runs inside a DeepSeek Harness runtime on the SSH host and gives that host a filesystem, a shell,
-processes and session storage. You normally do not install it by hand: the client deploys a
-runtime, uploads this package and starts it over stdio.
+This repository is the remote half of
+[dsh-remote-workspace](https://github.com/graydovee/dsh-remote-workspace). It is a headless DeepSeek
+Harness plugin that runs inside a target-side DSH profile. The client starts it over stdio; the process
+does not listen on a TCP port.
 
-Read this file if you are deploying or debugging a remote host by hand. The method reference,
-internal invariants and release rules are in [AGENTS.md](AGENTS.md).
+The server exposes the official DSH execution-world providers (filesystem, subprocess, terminal and
+sandbox forwarding) and the remote session plane used by the client. It owns the workspace registry
+and the JSONL session logs, while the client keeps the agent loop, model calls and credentials.
+
+Most users never install this repository directly. The client either reuses a compatible dsh already
+on the target or deploys a runtime package built and released from this repository.
+
+## Runtime layout
+
+A provisioned target contains:
+
+    ~/.dsh/server/
+      node/                 Node distribution used by the deployed runtime
+      dsh/                  @deepseek-ai/dsh and its dependencies
+    ~/.dsh/profiles/dsh-remote-server/
+      package.json
+      cordis.yml
+      cordis.patch.yml
+      node_modules/dsh-remote-workspace/
+    ~/.dsh/remote-server/
+      server-id             stable identity used by workspace ids
+      workspaces.json       standalone registry when no official registry exists
+      status.json           short-lived discovery manifest
+    ~/.dsh/remote-server-sessions/
+      ...                   official JSONL session storage
+
+The client starts the profile with a command equivalent to:
+
+    DSH_HOME="$HOME" \
+    PATH="$HOME/.dsh/server/node/bin:$HOME/.dsh/server/dsh/node_modules/.bin:$PATH" \
+    exec "$HOME/.dsh/server/dsh/node_modules/.bin/dsh" --profile dsh-remote-server
+
+The server then reads and writes the framed protocol on stdin/stdout. Closing the client releases
+process handles and, by default, exits the dedicated server profile.
 
 ## Requirements
 
-| Where | Needs |
+| Item | Requirement |
 | --- | --- |
-| Remote host | POSIX with `/bin/sh`, `tar`, `chmod` and a writable `$HOME` |
-| Runtime | DeepSeek Harness `0.2.1-rc.2` plus a Node distribution, both under `~/.dsh/server` |
-| Node on the host | Not needed — the deployed Node runs the deployed dsh |
+| DSH | Exactly 0.2.1-rc.2 for the current release |
+| Target OS | Linux or macOS with a POSIX shell |
+| Target tools | /bin/sh, tar, chmod, and a writable $HOME |
+| Node on the target | The client uploads a matching Node distribution separately; manual deployments must provide one |
+| Client | A matching dsh-remote-workspace client, or a manually generated equivalent profile |
 
-## Run it by hand
+Windows is supported as a client host through WSL. This repository does not publish a native Windows
+remote package.
 
-These are the steps the client performs, in the same order.
+## Manual deployment
 
-1. Stage a runtime package for the host's platform (requires a machine with Node and pnpm):
+Manual deployment is useful for protocol debugging and for inspecting a target without the client
+wizard. The profile files are part of the client/server contract; copy them from a client deployment
+or generate them with the client provisioner.
 
-   ```bash
-   node scripts/build-server-package.mjs --platform linux --arch x64 --libc gnu --out dist-server
-   ```
+1. Build a target package on a machine with Node and pnpm:
 
-2. Unpack the tarball into `~/.dsh/server/dsh` and a Node distribution into `~/.dsh/server/node`.
-3. Create the profile `~/.dsh/profiles/dsh-remote-server/` with `package.json`, `cordis.yml`,
-   `cordis.patch.yml` and `pnpm-workspace.yaml`, and put this package under
-   `node_modules/dsh-remote-workspace/`. The client generates these files; copy them from a host
-   it deployed rather than writing them from scratch.
-4. Start it on stdio:
+       pnpm install
+       pnpm build
+       node scripts/build-server-package.mjs --dsh-version 0.2.1-rc.2 --platform linux --arch x64 --libc gnu --out dist-server
 
-   ```bash
-   DSH_HOME="$HOME" \
-   PATH="$HOME/.dsh/server/node/bin:$HOME/.dsh/server/dsh/node_modules/.bin:$PATH" \
-   exec "$HOME/.dsh/server/dsh/node_modules/.bin/dsh" --profile dsh-remote-server
-   ```
+   Replace the platform and architecture with linux/arm64, darwin/x64 or darwin/arm64 as appropriate.
+   The script emits a .tar.gz, a .sha256 file and a manifest.
+2. Extract the Node distribution and DSH package under ~/.dsh/server/, and install this package's
+   built lib/ files under the profile's node_modules/dsh-remote-workspace/.
+3. Create ~/.dsh/profiles/dsh-remote-server/ with the matching package.json, cordis.yml,
+   cordis.patch.yml and pnpm-workspace.yaml. The patch must mount the official JSONL backend at
+   ~/.dsh/remote-server-sessions and this plugin's server row.
+4. Start the profile using the command shown above. Ensure stdout is reserved for the protocol; use
+   stderr for diagnostics.
 
-There is no listening port: the process speaks the protocol on stdin/stdout. On success it writes
-`~/.dsh/remote-server/status.json` (mode 0600) with `serverId`, `installationId`, `version`,
-`protocol`, `transport: 'stdio'` and `pid`.
+On successful startup, status.json is written with serverId, installationId, version, protocol,
+transport: "stdio" and pid, and is removed when the server shuts down.
 
 ## Configuration
 
-The client writes these into the `remote-workspace-server` row of the profile's
-`cordis.patch.yml`.
+The client writes these fields to the dsh-remote-workspace-server/server row in cordis.patch.yml:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `workspace` | `process.cwd()` | Workspace reported when the client does not name one |
-| `leaseMs` | `30000` | Client lease in ms; when it lapses every process this server holds is released |
-| `maxProcesses` | `128` | Maximum prepared or running process handles |
-| `exitOnClose` | `true` | Exit after a `close` request |
-| `serverId` | generated | Stable identity, part of every workspace id — never change it |
-| `installationId` | generated | Installation identity for multi-instance discovery |
-| `identityFile` | empty | File that persists `serverId` |
-| `workspaceIndex` | empty | Standalone workspace list, ignored when the shell registry exists |
-| `statusFile` | empty | Discovery manifest path |
-| `version` | package version | Reported by `server.hello` and `status.json` |
+| workspace | process.cwd() | Default workspace reported when a request omits one |
+| leaseMs | 30000 | Heartbeat lease; expiry releases all process handles owned by the client |
+| maxProcesses | 128 | Maximum prepared or running process handles |
+| exitOnClose | true | Exit after the close response is flushed |
+| serverId | generated | Stable identity used when identityFile is empty |
+| installationId | generated | Identity for multi-instance discovery |
+| identityFile | empty | File that persists serverId; keep it stable |
+| workspaceIndex | empty | Standalone workspace index; ignored when an official workspace registry is available |
+| statusFile | empty | Discovery manifest path; the client normally sets it |
+| version | package version | Version reported in server.hello and status.json |
+
+Changing serverId changes every derived workspace id. Do not rotate it during an upgrade.
+
+## Protocol surface
+
+The server supports the official DSH execution-world RPCs and Remote Session protocol revision 3.
+
+Remote Session methods:
+
+    server.hello
+    reg.list       reg.create       reg.rename       reg.delete
+    persist.list   persist.titles   persist.rename
+    persist.create persist.open     persist.append
+    persist.flush  persist.close    persist.locate
+
+Session writes use the official persistence handle and lease. There is no second lock file or alternate
+session format. Handles are in memory and disappear when the server restarts; the client reopens once
+when it receives an unknown-handle response.
+
+## Operational behavior
+
+- The target's server is authoritative for workspace paths, titles and session logs.
+- A workspace id is derived from the stable server identity and canonical remote path.
+- Renaming a workspace changes its title; it never moves the directory.
+- Removing a workspace removes the registry entry only. Its session logs remain on disk.
+- Session titles are read from the latest session/title event in the log because the remote profile
+  does not mount the title projection plugin.
+- If no sandbox backend is available, the server returns the official facts object with
+  enforcement: "partial" and runs the argv inside the remote world.
+- All request payloads are validated at the wire boundary. Unknown stream control frames are tolerated
+  as late messages; unknown stream data is fatal.
 
 ## Troubleshooting
 
-| Symptom | What to do |
+| Symptom | Check |
 | --- | --- |
-| The client reports a failed connection and the row is denied | The runtime is not `0.2.1-rc.2`; deploy the matching one, or see [Compatibility](#compatibility) |
-| The process exits immediately without output | The profile's patch layer did not mount the official JSONL backend, so nothing provides `sessionPersistence` |
-| `session "…" not found` after a restart | The handle table lives in memory; reopen the session (the client retries once) |
-| Idle commands get killed | The client stopped heartbeating and the lease expired; keep the connection open |
-| `status.json` is missing | `statusFile` was not configured, or the process already exited |
-| `process.done` output looks like gibberish | The collected stdout tail is base64 — decode it |
+| The client reports incompatible-version | Match both repositories to DSH 0.2.1-rc.2. |
+| The process exits immediately | Check that the profile patch mounted the JSONL backend and the server row. |
+| session "..." not found after a restart | Handles are memory-only; reopen the session through the client. |
+| Commands stop after an idle period | The heartbeat lease expired; keep the client connection alive. |
+| status.json is missing | statusFile was empty or the process has exited. |
+| Protocol output is corrupted | Keep stdout dedicated to the RPC stream and send logs to stderr. |
+| A sandbox request says no backend is usable | Verify the remote facts object; partial enforcement is expected on hosts without bubblewrap/Landlock. |
 
-## Compatibility
+## Compatibility and releases
 
-This plugin supports **exactly one DeepSeek Harness release, `0.2.1-rc.2`** (`engines.dsh`), and
-is refused by the installer and the loader on any other release. If you need to try one anyway:
+The current package is tested only with DSH 0.2.1-rc.2. Runtime packages are released from this
+repository under tags such as server-v0.2.1-rc.2. Each release contains:
 
-```bash
-dsh plugin --profile <profile> allow-version dsh-remote-workspace-server@<installed version> \
-  --dsh-version <your DSH version> --accept-risk
-```
+    dsh-remote-server-<dshVersion>-<platform>-<arch>[-<libc>].tar.gz
+    <same-name>.tar.gz.sha256
+    <same-name>.manifest.json
 
-Runtime packages are published per DSH release, tagged `server-v<dsh version>` for
-`linux-x64`, `linux-arm64`, `darwin-x64` and `darwin-arm64`. There is no Windows package: the
-remote side is POSIX, and Windows hosts are supported as WSL targets from the client.
+The release matrix is linux-x64-gnu, linux-arm64-gnu, darwin-x64 and darwin-arm64. The client
+verifies the checksum before caching or uploading an asset.
 
-## Contributing
+## Development
 
-Changing this repository is covered by [AGENTS.md](AGENTS.md): the method reference, the sync
-contract with the client, invariants and the release process. Users do not need it.
+Read AGENTS.md before editing shared protocol or server code. The client repository must carry
+byte-identical copies of src/protocol.ts, src/server/**, src/frame/** and src/provision/package-build.ts.
+The AGENTS file documents the comparison command, tests and tag workflow.
 
 ## License
 
