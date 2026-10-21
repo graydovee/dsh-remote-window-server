@@ -156,7 +156,7 @@ server.hello 的响应必须保持严格形状，包含 protocol、serverId、in
 NTFS 会丢可执行位，部署脚本必须用 test -e 和 chmod +x，并以 --version 成功为可执行判据。所有
 packageFiles 路径都是远端 POSIX 路径，不能使用 Windows join 生成反斜杠或拼接成 libserver.js。
 
-仓库版本等于发布版本，当前为 0.1.0-alpha.1，两仓保持一致。本机调试可以在 build 前追加临时修订号，
+仓库版本等于发布版本，当前为 0.1.0-alpha.2，两仓保持一致。本机调试可以在 build 前追加临时修订号，
 但不得提交、push、打 tag 或发布；部署完成后恢复 package.json 和 src/server/index.ts，再重新 build。
 
 README 只写公开用户能执行的安装、手动部署、配置、兼容性与排障。内部测试编号、个人路径和临时版本只放
