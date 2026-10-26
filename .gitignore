@@ -1,3 +1,5 @@
+dist/
+dist-runtime/
 node_modules/
 .pnpm-store/
 *.log

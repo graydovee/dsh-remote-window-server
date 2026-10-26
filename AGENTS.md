@@ -3,17 +3,23 @@
 本文件是 server 仓库的开发契约。用户如何部署和排障请看 README.md；这里定义跨仓库同步、wire
 协议、运行时行为、测试和发布规则。公共仓库中不得出现真实主机、用户名、路径、token 或私人部署信息。
 
-## 项目职责
+## 项目职责（v2）
 
-本仓库构建运行在目标机上的 headless DSH plugin。它不包含 agent loop、模型调用或 SSH 凭据，只负责：
+本仓库构建安装到 per-client DSH profile 里的 Cordis 插件。profile 本身是一个普通的 loopback
+`dsh web` 进程；client 通过 SSH 隧道访问它。插件负责：
 
-- 复用 DSH 官方 fs、subprocess、terminal、sandbox provider；
-- 通过 stdio 对 client 提供官方执行世界 RPC；
-- 提供 Remote Session protocol v3 的工作区 registry 与 persist.*；
-- 把会话日志写入目标机的官方 JSONL backend；
-- 写入短期 status.json，供 client 发现 server 身份。
+- 通过同源 HTTP/SSE/mux 暴露 P1 API（handshake、lease、RPC、timeline、prompt、cancel、approval）；
+- 复用官方 `webServer`、`connection`、`fs`、`subprocess`、`sandbox`、`sessionPersistence`；
+- 懒解析官方 `workspaceRegistry`、`sessionController`、`agents`，让 server 成为 workspace/会话权威；
+- 在 server 模式持有 managed agent 的官方 JSONL 写租约，并复用官方 live agent；
+- 提供 local 模式需要的执行世界（文件、进程、沙箱）和 workspace/session 视图；
+- 维护单 client profile 的 lease、executor 记录和 registry guard。
 
-client 仓库为 https://github.com/graydovee/dsh-remote-workspace。两边必须按同一协议和同一发布版本协作。
+v2 的 server 对话由 client 原生渲染；v1 的 embed/bootstrap 路由只保留回退，不是正常流程，也不再扩展。
+本仓库不持有 client 的 SSH 凭据；模型凭据按执行端留在实际运行 agent 的一侧。
+
+client 仓库为 https://github.com/graydovee/dsh-remote-workspace。两边必须按同一发布版本、同一 DSH
+运行时和同一 P1 协议协作。
 
 ## 本地命令
 
@@ -23,141 +29,151 @@ Node 使用 22.19 以上或 24 以上，依赖管理只用 pnpm：
     pnpm typecheck
     pnpm test
     pnpm build
-    node scripts/build-server-package.mjs --dsh-version 0.2.1-rc.2 --platform linux --arch x64 --libc gnu --out dist-server
-    node scripts/build-server-package.mjs --all --dsh-version 0.2.1-rc.2
+    pnpm pack:server-plugin
 
-pnpm build 生成 lib/server.js 和 lib/protocol.js；lib/ 是入库产物，禁止手改。server 的测试覆盖
-session-store、workspace registry、titles、rename、所有权透传和并发文件收敛。共享代码变更后，还必须在
-client 仓库运行 typecheck、test、build 和 conformance。
+`pnpm build` 生成 `lib/plugin.js` 等运行产物；`lib/` 禁止手改，必须改 `src/` 后重新构建。
+`pnpm pack:server-plugin` 生成 `dist/server-plugin/dsh-remote-workspace-server-<version>.tgz`、
+`.sha256` 和 `.manifest.json`。`pnpm build:runtime` 是 v1 独立 runtime 包的遗留脚本，不是 v2 发布路径。
 
 ## 两仓逐字节同步
 
-以下文件在本仓库和 client 仓库必须逐字节相同：
+v2 的逐字节契约只有三个文件：
 
     src/protocol.ts
-    src/server/controller.ts
-    src/server/index.ts
-    src/server/processes.ts
-    src/server/session-store.ts
     src/frame/codec.ts
     src/frame/mux.ts
-    src/frame/psk.ts
-    src/provision/package-build.ts
 
-提交前执行：
+提交前比较：
 
-    for f in protocol.ts server/controller.ts server/index.ts server/processes.ts server/session-store.ts frame/codec.ts frame/mux.ts frame/psk.ts provision/package-build.ts; do
+    for f in protocol.ts frame/codec.ts frame/mux.ts; do
       cmp -s "src/$f" "../dsh-remote-workspace/src/$f" || echo "DIFF: $f"
     done
 
-client 的 provisioner 会把自己的 lib/server.js 部署到目标机；server 仓库的 release 包也由本仓库构建。
-所以共享文件只改一侧是发布阻断错误。协议常量 REMOTE_SESSION_PROTOCOL 当前为 3，官方 SSH 执行 RPC
-仍为 v1。协议变化必须同步 server.hello、status.json、client copy、测试和 release 说明。
+旧 v1 的 `src/server/**`、`src/frame/psk.ts`、`src/provision/package-build.ts` 同步集已退出 v2 契约；
+不要在这三个共享文件之外新增需要双仓复制的实现。P1 协议常量
+`REMOTE_WORKSPACE_PLUGIN_PROTOCOL = 1`；改方法名、路径、错误码或帧格式必须同一次变更更新两仓、
+测试和协议文档。
 
 ## 构建边界
 
-tsdown 入口是 server 和 protocol，target 为 node22、格式为 ESM。server bundle 只 external：
+tsdown 入口是 `src/server-plugin/index.ts`，输出单文件 ESM `lib/plugin.js`，target node22。
+只有以下依赖保持 external，其余全部 inline：
 
-    @deepseek-ai/cordis
-    @deepseek-ai/schemastery
+    @deepseek-ai/*（dsh-ssh、dsh-subprocess-local 除外）
+    zod 固定 4.4.3，inline
 
-其它依赖，包括 dsh-ssh 的 protocol/schema 和 zod，必须内联；额外 external 会让目标机 profile
-无法解析模块或拆散 Cordis service registry。zod 固定为 4.4.3，禁止区间依赖。所有 @deepseek-ai/dsh-* peer
-和 engines.dsh 都精确钉在 0.2.1-rc.2。
+`dsh-ssh` 和 `dsh-subprocess-local/output` 在 profile 安装里没有，必须 inline；zod 也必须 inline。
+额外 external 会让目标机 profile 解析失败或拆散 Cordis service registry。`package.json` 的
+`main`/`exports` 必须指向 `lib/plugin.js`；`files` 必须包含 `lib`、`cordis.patch.yml`、两份 README 和
+LICENSE。
 
 源码职责：
 
-    src/server/index.ts       apply 行、配置 schema、server 生命周期、status.json
-    src/server/controller.ts  官方 RPC + Remote Session RPC、wire schema、限制与握手
-    src/server/session-store.ts workspace registry、JSONL 适配、titles、rename、句柄
-    src/server/processes.ts   进程和 terminal handle、heartbeat lease
-    src/frame/                 分帧、mux、PSK/capability
-    src/protocol.ts            与 client 共享的 Remote Session 类型和方法名
-    src/provision/package-build.ts 目标平台运行时包构建，与 client 同源
+    src/server-plugin/index.ts          apply、路由注册、handshake、dispatch、服务探针
+    src/server-plugin/lease.ts          单 client profile lease（20 s TTL）
+    src/server-plugin/registry-guard.ts 唯一受控的官方 workspaceRegistry prototype 守卫
+    src/server-plugin/managed.ts        server 模式 managed agent、prepare/resume/复用
+    src/server-plugin/persist.ts        official sessionPersistence 桥、单写者租约
+    src/server-plugin/agent-control.ts  prompt/cancel/approval/status
+    src/server-plugin/timeline.ts       session/timeline 分页与 JSONL 读取
+    src/server-plugin/events.ts         session/events SSE
+    src/server-plugin/title-fold.ts     标题 fold 与 (sessionId,sizeBytes) 记忆化
+    src/server-plugin/executor.ts       per-session executor 记录
+    src/server-plugin/fs-api.ts         远端目录浏览
+    src/server-plugin/embed.ts          v1 embed/bootstrap 遗留
+    src/server-plugin/mux.ts             P1 mux WS 适配
+    src/server-plugin/errors.ts         PluginError、scrub、HTTP 状态映射
+    src/protocol.ts / src/frame/*      与 client 共享的 P1 类型/帧
 
-所有边界输入都用显式 schema 校验。spawnSchema 不接受 stdio.stderr: ignore；只能使用官方允许的
-pipe、inherit 或 collect。生命周期资源使用 ctx.effect。
+所有 HTTP 路由先过 `ctx.connection.admit(req)`；JSON body ≤ 1 MiB（mux/portal/SSE 流除外）。
 
 ## 运行时硬约束
 
-- server 只使用目标机官方 provider；不复制第二套 SessionPersistence、JSONL 格式或锁协议。
-- persist.open 的写所有权就是官方 SessionHandle 租约；SessionAlreadyOwnedError 原样透传。
-- persist.append 必须 fail-closed，按官方 storage-contract 词表校验后才能落盘。
-- serverId 由 identityFile 稳定保存；workspaceId = sha256(serverId + NUL + canonical remote path) 的前 16
-  个十六进制字符。升级不可轮换 serverId。
-- createSession 和 openSession 必须把 header cwd 重锚到工作区路径，并原样透传 inheritedEventCount；否则 seeded
-  fork 会被官方后端拒绝。
-- titles 只读日志中的最后一个 session/title，latest wins；按 (session id, sizeBytes) 记忆化，并发上限 4，
-  单个会话读取失败不能让整批失败。
-- rename 不打开会话：借官方写 handle、读取日志长度生成连续 seq、追加官方 session/title 事件、flush、释放租约并
-  失效标题缓存。
-- 句柄表只在内存中，重启后全部失效；不要实现持久句柄。client 只允许对 unknown handle 自愈一次。
-- close 的回复必须先刷出再退出；process.exit 不能丢排队写，keep-alive timer 不能阻止优雅释放。
-- status.json 是发现清单，不是心跳；文件权限 0600，进程退出时删除。
-- 远端没有可用 sandbox backend 时，返回：
-  { argv, enforcement: 'partial', denialSignatures: [], runnerFailureRules: [] }。
-  不能返回裸数组，也不能用 z.unknown() 通过错误的 wire 形状。
-- mux 对未知流的 CREDIT、END、ABORT、OPEN_OK、OPEN_FAIL 忽略迟到消息；未知流 DATA 是致命帧失步。
+- profile server 只绑 `127.0.0.1`，不监听公网；token/cookie 只在 client host 内存。
+- RPC 必须校验 `x-dsh-rw-client` / `x-dsh-rw-instance` 与 lease 匹配；异 client 返回
+  `profile-foreign-client`，存活第二实例返回 `profile-in-use`，stale 才可接管。
+- workspace 清单/标题/id/顺序/pin/archive 以官方 `workspaceRegistry` 为唯一权威；不得引入插件自己的
+  副本或 `sha256(path)` 工作区 id。
+- 会话清单/标题/运行态/rename/fork/cancel 以官方 `sessionController` 为权威；标题必须由插件 JSONL
+  title fold 补齐，按 `(sessionId,sizeBytes)` 记忆化、latest wins、单会话失败不拖垮整批。
+- 会话日志读写走官方 `sessionPersistence`；单写者由官方 JSONL flock 裁决，不造第二把锁或另一种
+  JSONL 格式。`SessionAlreadyOwnedError` 呈现为 `session/writer-held`，v1 用显式错误，不接管。
+- `session/prepare-server`：先查 `agents.get(sessionId)`，已有 live agent 就复用；官方 UI 已打开时
+  返回 `managed:false, fallback:'restart'`，不得二次 resume。释放前 cancel → `agent.whenIdle()`（3 s
+  预算）→ `sessionPersistence.flush()`；超时显式报错，不静默 SIGTERM。
+- `session/prompt`、`session/cancel`、`session/approval` 只操作本 profile 的 managed agent；approval
+  必须校验 turn/approval id，未知/已过期请求显式报错。
+- executor 默认 `local`（新连接，client 通常没有 server 模型 key）；已有会话保留 server 端的
+  `executor` 记录。切换必须按 D20：preview 列出当前 turn + 其它 active turn，apply 带
+  `previewRevision` 与 `cancelActiveTurns:true`，缺清单拒绝。
+- RegistryGuard 是唯一允许修改官方全局服务的例外：版本守卫、幂等安装、失败降级，且不得替换
+  `workspaceRegistry` 实例；loader refresh 后复用同一 guard 的 loadedRevision/epoch。
+- 没有可用 sandbox backend 时返回官方 facts：
+  `{ argv, enforcement: 'partial', denialSignatures: [], runnerFailureRules: [] }`，不能用裸数组或
+  `z.unknown()` 绕过形状。
+- mux 对未知流的 CREDIT/END/ABORT/OPEN_OK/OPEN_FAIL 忽略迟到消息；未知流 DATA 是致命帧失步。
+- 所有错误/SSE detail 先 `scrubSecrets`；`httpStatusFor` 必须覆盖 `RW_ERROR_CODES`，未映射业务码是
+  契约 bug，不要静默 500。
+- v1 embed/bootstrap 只保留兼容：`tapIndex` 注入、portal 纯字节代理、storage shim 影响 iframe realm。
+  不要在新功能中依赖。
+
+## P1 wire
+
+路由前缀 `/dsh-remote-workspace-server`：
+
+    /api/handshake          POST，返回 protocol/server/profile/capabilities/lease
+    /api/rpc                POST，JSON { protocol, method, params }
+    /api/events             GET SSE，hello/revision/capabilities
+    /api/mux                WS，帧复用
+    /api/session/events     GET SSE，timeline/prompt/cancel/approval 事件
+    /embed/bootstrap.js      v1 遗留
+    /embed/embed.css         v1 遗留
+
+RPC 方法（协议 §16 冻结）：
+
+    profile/heartbeat profile/release profile/status profile/cancel-all
+    workspace/list workspace/create workspace/rename workspace/delete workspace/reorder
+    session/list session/create session/prepare-server session/rename session/fork
+    session/pin session/archive session/cancel session/reorder
+    persist/list persist/stat persist/create persist/open persist/read persist/append
+    persist/flush persist/close persist/locate
+    executor/get executor/assign executor/plan-switch executor/switch executor/release
+    registry/status registry/refresh
+    fs/list
+    session/timeline session/prompt session/approval session/status
+
+其他常量：`REMOTE_WORKSPACE_PLUGIN_PROTOCOL = 1`，`RW_ROUTE_PREFIX =
+'/dsh-remote-workspace-server'`。P1 请求必须带 protocol/client/instance 三个 header；SSE 的
+EventSource 不能设 header，仅靠 cookie admission。
 
 ## Cordis profile patch
 
-cordis.patch.yml 只挂两类行：
+`cordis.patch.yml` 只挂一行：
 
-1. remote-session-persistence：官方 session-persistence-jsonl，root 为 dshHomePath('remote-server-sessions')，
-   compression 为 zstd；已有 sessionPersistence 时 disabled。
-2. dsh-remote-workspace-server/server：identityFile、workspaceIndex、statusFile 使用
-   dshHomePath('remote-server/...')，exitOnClose 默认 true。
+    - insert:
+        - id: dsh-remote-workspace-server
+          name: dsh-remote-workspace-server
 
-远端 profile 不挂 session-title。标题由 client 产生并经 persist.append 写入日志，因此 titles 必须 fold
-日志事件。不要把 workspaceRegistry 写入 inject；没有 registry 时 session-store 才使用 standalone workspaces.json。
+profile 的官方 base/web-app 已经提供 `sessionPersistence`、workspace、agent 等服务；不要再挂 v1 的
+`remote-session-persistence`、`status.json` 或 `identityFile`。插件用 `ctx.get()` 懒解析可选服务，
+`workspaceRegistry` 不写入静态 `inject`，否则 loader disable/enable 会卸载插件。
 
-## Wire 方法
+## 兼容性与发布
 
-官方执行世界方法必须与 dsh-ssh helper 对齐：
+- 运行时契约唯一来源 `DSH_VERIFIED_RUNTIME`，当前只接受实测 `0.2.1-rc.3`。
+- `engines.dsh` 与全部 `@deepseek-ai/dsh-*` peer/dependency 精确钉在 `0.2.1-rc.3`；zod `4.4.3`；
+  `engines.node` 保持 `^22.19.0 || >=24.0.0`。
+- 仓库版本等于发布版本，当前 `0.1.0-alpha.3`，两仓保持一致；内置 server tarball 版本必须精确一致。
+- `pnpm pack:server-plugin` 的 manifest 必须包含协议、feature、`dshVersion`、字节长度与 sha256；
+  client 用 `scripts/bundle-server-plugin.mjs` 内置并写 `assets/server-plugin/checksums.json`。
+- 发布前至少两仓 `pnpm typecheck && pnpm test && pnpm build`，再在隔离 `DSH_HOME` 用 rc.3 启动
+  profile 做 `/api/handshake` 冒烟。版本号变更但未跑冒烟时不得宣称 verified。
+- 独立 runtime 包/`dist-runtime/` 是 v1 遗留产物；不要用它代替 v2 的 profile 插件，也不要修改全局
+  runtime。
 
-    hello heartbeat close executable
-    fs.resolve lstat stat list readText stream next streamClose readBytes readRange write edit
-    process.prepare start wait done terminate
-    terminal.environment write inspect activity resize signal
-    sandbox
+## 文档
 
-Remote Session protocol v3：
-
-    server.hello
-    reg.list reg.create reg.rename reg.delete
-    persist.list persist.titles persist.rename persist.create persist.open
-    persist.append persist.flush persist.close persist.locate
-
-server.hello 的响应必须保持严格形状，包含 protocol、serverId、installationId、version、workspacesRoot，
-可选 home。官方 hello 仍要求 kind=node-script、executable=process.execPath 等字段；旧形状不能兼容。
-
-## 测试与发布
-
-修改后至少运行：
-
-    pnpm typecheck
-    pnpm test
-    pnpm build
-
-共享代码还要在 client 仓库运行：
-
-    pnpm typecheck
-    pnpm test
-    pnpm build
-    pnpm exec vitest run tests/conformance.test.ts
-
-运行时包由 .github/workflows/server-release.yml 发布。tag 用 server-v<dsh-version> 或插件版本 v<pluginVersion>（client 按这个顺序回退查找；artifact 名始终跟随 dsh 版本）；
-当前矩阵为 linux-x64-gnu、linux-arm64-gnu、darwin-x64、darwin-arm64。每个 release 必须同时包含：
-
-    dsh-remote-server-<dshVersion>-<platform>-<arch>[-<libc>].tar.gz
-    <same-name>.tar.gz.sha256
-    <same-name>.manifest.json
-
-NTFS 会丢可执行位，部署脚本必须用 test -e 和 chmod +x，并以 --version 成功为可执行判据。所有
-packageFiles 路径都是远端 POSIX 路径，不能使用 Windows join 生成反斜杠或拼接成 libserver.js。
-
-仓库版本等于发布版本，当前为 0.1.0-alpha.3，两仓保持一致。本机调试可以在 build 前追加临时修订号，
-但不得提交、push、打 tag 或发布；部署完成后恢复 package.json 和 src/server/index.ts，再重新 build。
-
-README 只写公开用户能执行的安装、手动部署、配置、兼容性与排障。内部测试编号、个人路径和临时版本只放
-本文件或测试注释。
+README 只写公开用户能执行的部署、兼容性、数据位置与排障；内部测试编号、个人路径、临时版本、发布
+流水线细节只放本文件或测试注释。协议/架构变化要同步 client 的
+`doc/refactor-v1-architecture.md`、`doc/refactor-v1-protocol.md` 和
+`doc/dsh-rc3-compatibility.md`。

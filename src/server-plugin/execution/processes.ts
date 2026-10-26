@@ -21,6 +21,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import { SshRpcPeer } from '@deepseek-ai/dsh-ssh/protocol'
+import { scrubSecrets } from '../errors.ts'
 import {
   outputSnapshotFrameLimit,
   processIdSchema,
@@ -244,14 +245,20 @@ export class RemoteProcesses {
       ? {}
       : Object.fromEntries(Object.entries(request.env).map(([key, value]) => [key, value ?? undefined]))
     if (request.terminal !== undefined) {
-      const terminal = await this.ctx.subprocess.spawnTerminal({
-        argv: request.argv,
-        cwd,
-        env: Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
-        graceMs: request.graceMs,
-        ...request.terminal,
-        signal: record.controller.signal,
-      })
+      const terminalEnv = Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined))
+      terminalEnv['PATH'] = mergedPath(env['PATH'], process.env['PATH']) ?? '/usr/local/bin:/usr/bin:/bin'
+      const diagnostic: SpawnDiagnosticContext = { argv: request.argv, cwd, path: terminalEnv['PATH'], uid: process.getuid?.() }
+      let terminal: Awaited<ReturnType<typeof this.ctx.subprocess.spawnTerminal>>
+      try {
+        terminal = await this.ctx.subprocess.spawnTerminal({
+          argv: request.argv,
+          cwd,
+          env: terminalEnv,
+          graceMs: request.graceMs,
+          ...request.terminal,
+          signal: record.controller.signal,
+        })
+      } catch (error) { throw diagnoseSpawn(error, diagnostic) }
       record.terminal = terminal
       record.controller.signal.throwIfAborted()
       const stream = record.streams.terminal as ProcessStream
@@ -259,7 +266,7 @@ export class RemoteProcesses {
       // writable side immediately, so draining `inbound` just releases its EOF.
       stream.inbound.resume()
       const output = pipeline(terminal.output, stream.outbound).catch(() => {})
-      const done: Promise<Completion> = terminal.done.then(outcome => ({ outcome: wireOutcome(outcome), spills: {}, collected: {} }))
+      const done: Promise<Completion> = terminal.done.then(outcome => ({ outcome: wireOutcome(outcome), spills: {}, collected: {} })).catch(error => { throw diagnoseSpawn(error, diagnostic) })
       record.done = done
       void done.then(async () => {
         if (request.terminal?.shellActivity === true) {
@@ -273,10 +280,13 @@ export class RemoteProcesses {
       return
     }
     const stdio = request.stdio as NonNullable<Request['stdio']>
+    const spawnEnv: Record<string, string | undefined> = { ...env }
+    spawnEnv['PATH'] = mergedPath(env['PATH'], process.env['PATH']) ?? '/usr/local/bin:/usr/bin:/bin'
+    const diagnostic: SpawnDiagnosticContext = { argv: request.argv, cwd, path: spawnEnv['PATH'], uid: process.getuid?.() }
     const spec: SubprocessSpawnSpec = {
       argv: request.argv,
       cwd,
-      env,
+      env: spawnEnv,
       graceMs: request.graceMs,
       signal: record.controller.signal,
       stdio: {
@@ -286,7 +296,8 @@ export class RemoteProcesses {
         ...(stdio.control === undefined ? {} : { control: stdio.control }),
       },
     }
-    const ordinary = this.ctx.subprocess.spawn(spec)
+    let ordinary: ReturnType<typeof this.ctx.subprocess.spawn>
+    try { ordinary = this.ctx.subprocess.spawn(spec) } catch (error) { throw diagnoseSpawn(error, diagnostic) }
     record.ordinary = ordinary
     const control = ordinary.control
     if (record.streams.control !== undefined && control === undefined) {
@@ -345,7 +356,7 @@ export class RemoteProcesses {
     }
     const done: Promise<Completion> = ordinary.done.finally(() => {
       for (const stop of stopCapture) stop()
-    }).then(async (outcome) => {
+    }).catch(error => { throw diagnoseSpawn(error, diagnostic) }).then(async (outcome) => {
       for (const forwarder of forwarders) forwarded.push(forwarder.finish())
       await Promise.race([
         Promise.all(streams),
@@ -507,6 +518,46 @@ export class RemoteProcesses {
     this.cleanups.add(pending)
     return pending.finally(() => { this.cleanups.delete(pending) })
   }
+}
+
+
+/** Spawn failure enriched with the exact environment the provider saw (protocol §16.6). */
+const SPAWN_DIAGNOSED = Symbol.for('dsh-rw.spawn-diagnosed')
+
+interface SpawnDiagnosticContext {
+  readonly argv: readonly string[]
+  readonly cwd: string
+  readonly path: string | undefined
+  readonly uid: number | undefined
+}
+
+/** Attach a scrubbed one-line diagnostic to a spawn failure without losing its code. */
+function diagnoseSpawn(error: unknown, context: SpawnDiagnosticContext): Error {
+  const detail = error instanceof Error ? error : new Error(String(error))
+  if ((detail as { [SPAWN_DIAGNOSED]?: boolean })[SPAWN_DIAGNOSED] === true) return detail
+  const code = (detail as NodeJS.ErrnoException).code
+  const report = {
+    name: detail.name,
+    ...(typeof code === 'string' ? { code } : {}),
+    message: detail.message,
+    argv: [...context.argv],
+    cwd: context.cwd,
+    path: context.path,
+    uid: context.uid,
+  }
+  const safeReport = scrubSecrets(JSON.stringify(report))
+  const wrapped = new Error(`${scrubSecrets(detail.message)} [spawn-diagnostic ${safeReport}]`, { cause: detail })
+  Object.defineProperty(wrapped, SPAWN_DIAGNOSED, { value: true })
+  if (typeof code === 'string') Object.defineProperty(wrapped, 'code', { value: code, enumerable: true, configurable: true })
+  return wrapped
+}
+
+/** Keep the profile's PATH usable when a client env omits or narrows the server dirs. */
+function mergedPath(requested: string | undefined, serverPath: string | undefined): string | undefined {
+  const server = serverPath === undefined || serverPath === '' ? undefined : serverPath
+  const defaults = '/usr/local/bin:/usr/bin:/bin'
+  if (requested === undefined || requested === '') return [server, defaults].filter((entry): entry is string => entry !== undefined).join(':') || undefined
+  return [requested, server, defaults].filter((entry): entry is string => entry !== undefined && entry !== '').join(':')
 }
 
 const terminalSignalSchema = z.enum(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGTSTP', 'SIGHUP'])

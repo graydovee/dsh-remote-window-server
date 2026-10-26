@@ -10,9 +10,9 @@
  * the same official provider set, so the local client reuses the official SSH
  * providers unchanged.
  */
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough, type Readable, type Writable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
@@ -36,12 +36,17 @@ import {
   textStreamIdSchema,
   writeResultSchema,
 } from '@deepseek-ai/dsh-ssh/schemas'
-import { DEFAULT_MAX_FRAME_BYTES } from '../frame/codec.ts'
-import { FrameMux, streamTransport } from '../frame/mux.ts'
-import { capabilityMatches } from '../frame/psk.ts'
+import { DEFAULT_MAX_FRAME_BYTES } from '../../frame/codec.ts'
+import { FrameMux, streamTransport } from '../../frame/mux.ts'
 import { RemoteProcesses, terminalSignalSchema, type Channel, type ProcessStream } from './processes.ts'
-import { RemoteSessionStore } from './session-store.ts'
-import { REMOTE_SESSION_PROTOCOL, type RemoteHandleId, type RemoteSessionId, type WorkspaceId } from '../protocol.ts'
+
+/** Constant-time stream-capability comparison (the old PSK helper's admission rule). */
+function capabilityMatches(expected: string, candidate: unknown): boolean {
+  if (typeof candidate !== 'string' || candidate.length !== expected.length) return false
+  const left = Buffer.from(expected, 'utf8')
+  const right = Buffer.from(candidate, 'utf8')
+  return left.length === right.length && timingSafeEqual(left, right)
+}
 
 /** The official helper's whole-text and read ceilings, re-applied on this side. */
 export const MAX_TEXT_BYTES = 8 * 1024 * 1024
@@ -127,23 +132,6 @@ function noteUnconfined(mode: string): void {
   unconfinedReported.add(mode)
   console.error(`[dsh-remote-workspace] no sandbox backend inside the remote world; running \`${mode}\` commands unconfined there`)
 }
-/**
- * Refuse a `server.hello` whose protocol number is not ours, with a sentence the
- * *other* side can act on.
- *
- * The strict schema would answer `Invalid input: expected 3`; an older client
- * showing that has no way to know it should upgrade the plugin. Contract §14.4
- * therefore requires reading the number first and naming both versions.
- * @param raw - the request payload as received.
- */
-export function assertHelloProtocol(raw: unknown): void {
-  const header = remoteHelloProtocol.safeParse(raw)
-  if (!header.success || header.data.protocol !== REMOTE_SESSION_PROTOCOL) {
-    const spoken = header.success ? String(header.data.protocol) : 'unknown'
-    throw new Error(`unsupported remote session protocol ${spoken}; this server speaks ${REMOTE_SESSION_PROTOCOL} (upgrade the client plugin)`)
-  }
-}
-
 const resizeRequest = z.object({ id: processIdSchema, cols: z.number().int().positive(), rows: z.number().int().positive() }).strict()
 const terminalOperation = z.object({ id: processIdSchema, value: z.string().optional() }).strict()
 const helloRequest = z.object({
@@ -153,36 +141,6 @@ const helloRequest = z.object({
   bootstrapPath: z.string().startsWith('/').optional(),
 }).strict()
 const endpointSchema = z.object({ path: z.string(), capability: z.string().regex(/^[0-9a-f]{64}$/) }).strict()
-const remoteHelloRequest = z.object({ protocol: z.literal(REMOTE_SESSION_PROTOCOL), clientVersion: z.string().min(1) }).strict()
-/**
- * The hello's protocol number, read **before** the strict schema.
- *
- * The strict parse would answer `Invalid input: expected 3` to an older client —
- * useless. Contract §14.4 requires an actionable sentence instead.
- */
-const remoteHelloProtocol = z.object({ protocol: z.number().int() }).passthrough()
-const workspaceId = z.string().length(16).transform(value => value as WorkspaceId)
-const sessionId = z.string().min(1).transform(value => value as RemoteSessionId)
-const handleId = z.string().min(1).transform(value => value as RemoteHandleId)
-const remoteWorkspaceRequest = z.object({ workspaceId }).strict()
-const remoteCreateWorkspaceRequest = z.object({ path: z.string().startsWith('/'), title: z.string().min(1).optional() }).strict()
-/** `reg.list` accepts an optional activity flag; `{}` means "no activity". */
-const remoteWorkspaceListRequest = z.object({ includeActivity: z.boolean().optional() }).strict()
-/** `reg.rename` / `reg.delete` take the 16-hex workspace id as an opaque string. */
-const remoteWorkspaceRenameRequest = z.object({ id: z.string().min(1), title: z.string() }).strict()
-const remoteWorkspaceDeleteRequest = z.object({ id: z.string().min(1), force: z.boolean().optional() }).strict()
-const remoteSessionListRequest = z.object({ workspaceId }).strict()
-const remoteSessionCreateRequest = z.object({
-  workspaceId,
-  header: z.record(z.string(), z.unknown()),
-  inheritedEventCount: z.number().int().nonnegative().optional(),
-}).strict()
-const remoteSessionOpenRequest = z.object({ workspaceId, sessionId, mode: z.enum(['read', 'write']) }).strict()
-const remoteSessionAppendRequest = z.object({ handleId: handleId, events: z.array(z.record(z.string(), z.unknown())) }).strict()
-const remoteSessionHandleRequest = z.object({ handleId }).strict()
-const remoteSessionLocateRequest = z.object({ sessionId }).strict()
-const remoteSessionRenameRequest = z.object({ workspaceId, sessionId, title: z.string().min(1) }).strict()
-
 /** Options for one remote execution-world server. */
 export interface RemoteServerOptions {
   /** The remote profile's service context. */
@@ -201,12 +159,6 @@ export interface RemoteServerOptions {
   readonly entryPath?: string
   /** Called after a `close` request has been answered, so a dedicated host can exit. */
   readonly onClose?: () => void
-  /** Optional official persistence adapter for Remote Session RPCs. */
-  readonly sessionStore?: RemoteSessionStore
-  /** Stable identity advertised by the server plugin. */
-  readonly serverId?: string
-  readonly installationId?: string
-  readonly version?: string
 }
 
 /** Server half of the remote-workspace channel. */
@@ -331,7 +283,6 @@ export class RemoteExecutionServer {
       try {
         await this.processes?.close()
       } finally {
-        await this.options.sessionStore?.dispose()
         await rm(this.root, { recursive: true, force: true })
       }
     })()
@@ -392,24 +343,6 @@ export class RemoteExecutionServer {
           : { bootstrapHash: createHash('sha256').update(await readFile(input.bootstrapPath)).digest('hex') }),
       })
     }
-    if (method === 'server.hello') {
-      // Read the number first: see `assertHelloProtocol` (contract §14.4).
-      assertHelloProtocol(raw)
-      const input = remoteHelloRequest.parse(raw)
-      await this.started
-      this.initialized = true
-      this.touchLease()
-      return {
-        protocol: REMOTE_SESSION_PROTOCOL,
-        serverId: this.options.serverId ?? 'ephemeral',
-        installationId: this.options.installationId ?? 'stdio',
-        version: this.options.version ?? '0.1.0-alpha50',
-        workspacesRoot: this.workspace,
-        // The directory browser's 主目录 shortcut: the server process runs as
-        // the remote user, so its home is the user's home.
-        home: homedir(),
-      }
-    }
     await this.started
     if (!this.initialized || this.cleanup !== undefined) throw new Error('remote workspace server is not accepting operations')
     const processes = this.processes as RemoteProcesses
@@ -426,78 +359,6 @@ export class RemoteExecutionServer {
       // dedicated host's exit is deferred until after it has flushed.
       if (process.env.DSH_RW_DEBUG) console.error('[srv] close released, replying')
       this.options.onClose?.()
-      return null
-    }
-    const sessions = this.options.sessionStore
-    if (method === 'reg.list') {
-      if (sessions === undefined) throw new Error('remote session persistence is not configured')
-      // `includeActivity` is opt-in because it folds every session log; an old
-      // client sends `{}` and gets the cheap list (contract §14.1).
-      const input = remoteWorkspaceListRequest.parse(raw ?? {})
-      return await sessions.listWorkspaces(input.includeActivity === true)
-    }
-    if (method === 'reg.create') {
-      if (sessions === undefined) throw new Error('remote session persistence is not configured')
-      const input = remoteCreateWorkspaceRequest.parse(raw)
-      return await sessions.createWorkspace(input.path, input.title)
-    }
-    if (method === 'reg.rename') {
-      if (sessions === undefined) throw new Error('remote session persistence is not configured')
-      const input = remoteWorkspaceRenameRequest.parse(raw)
-      // `id` is validated (and the workspace must exist) inside the store, which
-      // owns the contract's message prefixes (`invalid-workspace-id`,
-      // `invalid-title`, `unknown remote workspace "…"`).
-      return await sessions.renameWorkspace(input.id as WorkspaceId, input.title)
-    }
-    if (method === 'reg.delete') {
-      if (sessions === undefined) throw new Error('remote session persistence is not configured')
-      const input = remoteWorkspaceDeleteRequest.parse(raw)
-      // `force` deletes the registry ENTRY only; session logs are never touched
-      // (architecture A35), so re-registering the path restores its sessions.
-      return await sessions.removeWorkspace(input.id as WorkspaceId, input.force === true)
-    }
-    if (method === 'persist.list') {
-      if (sessions === undefined) throw new Error('remote session persistence is not configured')
-      return await sessions.listSessions(remoteSessionListRequest.parse(raw).workspaceId)
-    }
-    if (method === 'persist.titles') {
-      if (sessions === undefined) throw new Error('remote session persistence is not configured')
-      return await sessions.titles(remoteSessionListRequest.parse(raw).workspaceId)
-    }
-    if (method === 'persist.rename') {
-      if (sessions === undefined) throw new Error('remote session persistence is not configured')
-      const input = remoteSessionRenameRequest.parse(raw)
-      return await sessions.rename(input.workspaceId, input.sessionId, input.title)
-    }
-    if (method === 'persist.create') {
-      if (sessions === undefined) throw new Error('remote session persistence is not configured')
-      const input = remoteSessionCreateRequest.parse(raw)
-      return await sessions.createSession(input.workspaceId, input.header as never, input.inheritedEventCount)
-    }
-    if (method === 'persist.locate') {
-      if (sessions === undefined) throw new Error('remote session persistence is not configured')
-      const input = remoteSessionLocateRequest.parse(raw)
-      return { workspaceId: await sessions.locateSession(input.sessionId) ?? null }
-    }
-    if (method === 'persist.open') {
-      if (sessions === undefined) throw new Error('remote session persistence is not configured')
-      const input = remoteSessionOpenRequest.parse(raw)
-      return await sessions.openSession(input.workspaceId, input.sessionId, input.mode)
-    }
-    if (method === 'persist.append') {
-      if (sessions === undefined) throw new Error('remote session persistence is not configured')
-      const input = remoteSessionAppendRequest.parse(raw)
-      await sessions.append(input.handleId, input.events as never)
-      return null
-    }
-    if (method === 'persist.flush') {
-      if (sessions === undefined) throw new Error('remote session persistence is not configured')
-      await sessions.flush(remoteSessionHandleRequest.parse(raw).handleId)
-      return null
-    }
-    if (method === 'persist.close') {
-      if (sessions === undefined) throw new Error('remote session persistence is not configured')
-      await sessions.close(remoteSessionHandleRequest.parse(raw).handleId)
       return null
     }
     if (method === 'process.prepare') return processes.prepare(raw)
