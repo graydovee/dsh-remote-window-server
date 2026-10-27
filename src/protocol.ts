@@ -72,6 +72,10 @@ export const RW_METHODS = {
   fsList: 'fs/list',
   sessionTimeline: 'session/timeline',
   sessionPrompt: 'session/prompt',
+  sessionCommands: 'session/commands',
+  sessionCommand: 'session/command',
+  sessionModelCatalog: 'session/modelCatalog',
+  sessionSelectModel: 'session/selectModel',
   sessionApproval: 'session/approval',
   sessionStatus: 'session/status',
 } as const
@@ -320,11 +324,45 @@ export interface RwApprovalSummary {
 }
 
 /** `session/prompt`: deliver one user turn (or steering message) to the managed agent. */
+export interface RwPromptAttachment {
+  /** Browser display name; the server sanitizes it before storage. */
+  readonly name: string
+  /** Declared media type; the attachment store verifies the bytes. */
+  readonly mediaType: string
+  /** Canonical base64 bytes; the host route bounds the request body to 1 MiB. */
+  readonly data: string
+}
+
 export interface RwPromptRequest {
   readonly sessionId: string
   readonly text: string
   readonly mode?: 'followup' | 'steer'
   readonly requestId?: string
+  /** Images/files admitted by the server attachment store and sent with the turn. */
+  readonly attachments?: readonly RwPromptAttachment[]
+}
+
+export interface RwCommandDescriptor {
+  readonly name: string
+  readonly description: string
+  readonly input?: unknown
+}
+
+export interface RwCommandListValue {
+  readonly sessionId: string
+  readonly commands: readonly RwCommandDescriptor[]
+}
+
+export interface RwCommandRequest {
+  readonly sessionId: string
+  readonly line: string
+}
+
+export interface RwCommandValue {
+  readonly sessionId: string
+  readonly executed: boolean
+  readonly commandId?: string
+  readonly result?: unknown
 }
 
 /** `session/prompt` acceptance; the turn itself is observed through `session/events`. */

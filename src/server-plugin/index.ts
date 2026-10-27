@@ -39,7 +39,7 @@ import { ExecutorStore } from './executor.ts'
 import { serveMux } from './mux.ts'
 import { readTimeline } from './timeline.ts'
 import { sessionEventParams, streamSessionEvents } from './events.ts'
-import { ApprovalHub, approveSession, cancelSession, promptSession, sessionStatusValue } from './agent-control.ts'
+import { ApprovalHub, approveSession, cancelSession, executeSessionCommand, listSessionCommands, promptSession, sessionStatusValue } from './agent-control.ts'
 import { installQaApprovalGate, readQaApprovalTool } from './qa-approval.ts'
 import { listDirectory } from './fs-api.ts'
 import { executorModeOf } from './session-row.ts'
@@ -154,6 +154,8 @@ interface SessionControllerLike {
   create?(request: Record<string, unknown>): Promise<{ readonly sessionId: string; readonly agentPreset?: string }>
   rename?(request: Record<string, unknown>): Promise<{ readonly title: string; readonly seq: number }>
   fork?(request: Record<string, unknown>): Promise<{ readonly sessionId: string }>
+  modelCatalog?(): Promise<unknown>
+  selectModel?(request: Record<string, unknown>): Promise<unknown>
 }
 
 interface PersistenceLike {
@@ -203,6 +205,7 @@ export interface PluginState {
   refreshRegistry?: () => Promise<{ revision: string; serviceReplaced: boolean }>
   approvals?: ApprovalHub
   approvalGate?: 'qa' | 'off'
+  sessionController?: SessionControllerLike
 }
 
 /** Read the package version from the installed package root. */
@@ -878,6 +881,25 @@ async function dispatch(ctx: Context, state: PluginState, lease: ProfileLease, m
       return await readTimeline(ctx, asRecord(params))
     case RW_METHODS.sessionPrompt:
       return await promptSession(ctx, state.managed, asRecord(params))
+    case RW_METHODS.sessionCommands:
+      return await listSessionCommands(ctx, state.managed, asRecord(params))
+    case RW_METHODS.sessionCommand:
+      return await executeSessionCommand(ctx, state.managed, asRecord(params))
+    case RW_METHODS.sessionModelCatalog: {
+      const controller = state.sessionController ?? ctx.get('sessionController') as SessionControllerLike | undefined
+      if (controller?.modelCatalog === undefined) throw new PluginError('agent-unavailable', 'the profile has no sessionController model catalog')
+      return await controller.modelCatalog()
+    }
+    case RW_METHODS.sessionSelectModel: {
+      const body = asRecord(params)
+      const sessionId = typeof body['sessionId'] === 'string' ? body['sessionId'] : ''
+      const provider = typeof body['provider'] === 'string' ? body['provider'] : ''
+      const model = typeof body['model'] === 'string' ? body['model'] : ''
+      if (sessionId === '' || provider === '' || model === '') throw new PluginError('bad-request', 'session/selectModel requires sessionId, provider and model')
+      const controller = state.sessionController ?? ctx.get('sessionController') as SessionControllerLike | undefined
+      if (controller?.selectModel === undefined) throw new PluginError('agent-unavailable', 'the profile has no sessionController model selector')
+      return await controller.selectModel({ sessionId, provider, model, ...(body['reasoningEffort'] === undefined ? {} : { reasoningEffort: body['reasoningEffort'] }) })
+    }
     case RW_METHODS.sessionApproval:
       if (state.approvals === undefined) throw new PluginError('internal', 'the approval hub is unavailable')
       return approveSession(state.approvals, asRecord(params))
@@ -1003,6 +1025,9 @@ export function apply(ctx: Context, config: PluginOptions = {}): void {
   // race the post-refresh write).
   let guard: RegistryGuard | undefined
   ctx.effect(() => () => guard?.dispose(), 'dsh-rw: registry guard lifetime')
+  ;(ctx as unknown as { inject(deps: string[], cb: (scope: Context) => void): unknown }).inject(['sessionController'], (scope) => {
+    state.sessionController = (scope as Context).get('sessionController') as SessionControllerLike | undefined
+  })
   ;(ctx as unknown as { inject(deps: string[], cb: (scope: Context) => void): unknown }).inject(['workspaceRegistry'], () => {
     guard ??= new RegistryGuard(ctx, paths.registryFile, join(paths.lockDir, 'registry'))
     const current = guard

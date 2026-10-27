@@ -8,16 +8,21 @@
  */
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
-import type { RwApprovalRequest, RwApprovalSummary, RwApprovalValue, RwPromptValue, RwSessionStatusValue } from '../protocol.ts'
+import type { RwApprovalRequest, RwApprovalSummary, RwApprovalValue, RwCommandListValue, RwCommandValue, RwPromptValue, RwSessionStatusValue } from '../protocol.ts'
 import { PluginError } from './errors.ts'
 import type { ApprovalSource } from './events.ts'
 import { sessionStatus } from './events.ts'
 
 /** Assistant/user message shape accepted by `Agent.followup`/`steer`. */
+type OutgoingPart =
+  | { readonly type: 'text'; readonly text: string }
+  | { readonly type: 'file'; readonly attachment: unknown }
+  | { readonly type: 'image'; readonly attachment: unknown }
+
 interface OutgoingMessage {
   readonly id: string
   readonly role: 'user'
-  readonly content: readonly { readonly type: 'text'; readonly text: string }[]
+  readonly content: readonly OutgoingPart[]
   readonly source: { readonly kind: 'user' }
 }
 
@@ -31,6 +36,16 @@ interface AgentLike {
 
 interface AgentsLike {
   get(id: string): AgentLike | undefined
+}
+
+interface AttachmentStoreLike {
+  admitEncodedFile(input: { readonly data: Uint8Array; readonly name?: string }): Promise<unknown>
+  saveImages(inputs: readonly { readonly data: Uint8Array; readonly mediaType: string; readonly name?: string }[]): Promise<readonly unknown[]>
+}
+
+interface CommandsLike {
+  list(agent: AgentLike): readonly { readonly name: string; readonly description: string; readonly input?: unknown }[]
+  execute(agent: AgentLike, line: string, attachments: readonly unknown[], signal: AbortSignal): Promise<{ readonly commandId: string; readonly result: unknown } | undefined>
 }
 
 interface ManagedLike {
@@ -193,8 +208,50 @@ export function installApprovalAnswerer(ctx: Context, hub: ApprovalHub, preempt 
   return () => { off?.() }
 }
 
-function outgoingMessage(text: string): OutgoingMessage {
-  return { id: randomUUID(), role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } }
+function outgoingMessage(content: readonly OutgoingPart[]): OutgoingMessage {
+  return { id: randomUUID(), role: 'user', content, source: { kind: 'user' } }
+}
+
+const MAX_ATTACHMENTS = 4
+const MAX_ATTACHMENT_BYTES = 600 * 1024
+const MAX_ATTACHMENTS_BYTES = 900 * 1024
+
+/** Decode one canonical base64 attachment and enforce the host-route budget. */
+function decodeAttachment(value: unknown): { readonly name: string; readonly mediaType: string; readonly bytes: Uint8Array } {
+  if (typeof value !== 'object' || value === null) throw new PluginError('bad-request', 'attachment must be an object')
+  const input = value as Record<string, unknown>
+  const name = typeof input['name'] === 'string' ? input['name'] : ''
+  const mediaType = typeof input['mediaType'] === 'string' ? input['mediaType'] : 'application/octet-stream'
+  const data = typeof input['data'] === 'string' ? input['data'] : ''
+  if (name === '' || data === '') throw new PluginError('bad-request', 'attachment requires name and data')
+  if (data.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4 + 4) throw new PluginError('bad-request', `attachment "${name}" is too large`)
+  const bytes = Buffer.from(data, 'base64')
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_ATTACHMENT_BYTES) throw new PluginError('bad-request', `attachment "${name}" is too large`)
+  return { name, mediaType, bytes }
+}
+
+/** Build the prompt parts, admitting uploads through the server attachment store. */
+async function promptContent(ctx: Context, text: string, raw: unknown): Promise<{ readonly content: readonly OutgoingPart[]; readonly bytes: number }> {
+  const content: OutgoingPart[] = [{ type: 'text', text }]
+  if (raw === undefined) return { content, bytes: 0 }
+  if (!Array.isArray(raw)) throw new PluginError('bad-request', 'attachments must be an array')
+  if (raw.length > MAX_ATTACHMENTS) throw new PluginError('bad-request', `at most ${MAX_ATTACHMENTS} attachments are allowed`)
+  const decoded = raw.map(decodeAttachment)
+  const bytes = decoded.reduce((sum, item) => sum + item.bytes.byteLength, 0)
+  if (bytes > MAX_ATTACHMENTS_BYTES) throw new PluginError('bad-request', 'attachments exceed the size budget')
+  if (decoded.length === 0) return { content, bytes }
+  const attachments = ctx.get('attachments') as AttachmentStoreLike | undefined
+  if (attachments === undefined) throw new PluginError('bad-request', 'the profile has no attachment store')
+  for (const item of decoded) {
+    if (item.mediaType.startsWith('image/')) {
+      const [ref] = await attachments.saveImages([{ data: item.bytes, mediaType: item.mediaType, name: item.name }])
+      content.push({ type: 'image', attachment: ref })
+    } else {
+      const ref = await attachments.admitEncodedFile({ data: item.bytes, name: item.name })
+      content.push({ type: 'file', attachment: ref })
+    }
+  }
+  return { content, bytes }
 }
 
 /** Resolve a live agent, resuming a cold server session through the managed handle. */
@@ -222,7 +279,8 @@ export async function promptSession(ctx: Context, managed: ManagedLike | undefin
   if (text === '') throw new PluginError('bad-request', 'session/prompt requires non-empty text')
   const mode = params['mode'] === 'steer' ? 'steer' : 'followup'
   const agent = await ensureAgent(ctx, managed, sessionId)
-  const message = outgoingMessage(text)
+  const admitted = await promptContent(ctx, text, params['attachments'])
+  const message = outgoingMessage(admitted.content)
   try {
     if (mode === 'steer') agent.steer?.(message)
     else agent.followup?.(message)
@@ -230,6 +288,30 @@ export async function promptSession(ctx: Context, managed: ManagedLike | undefin
     throw new PluginError('persist-read-only', `prompt rejected: ${error instanceof Error ? error.message : String(error)}`)
   }
   return { accepted: true, sessionId }
+}
+
+/** `session/commands`: official command descriptors available to the live agent. */
+export async function listSessionCommands(ctx: Context, managed: ManagedLike | undefined, params: Record<string, unknown>): Promise<RwCommandListValue> {
+  const sessionId = typeof params['sessionId'] === 'string' ? params['sessionId'] : ''
+  if (sessionId === '') throw new PluginError('bad-request', 'session/commands requires sessionId')
+  const agent = await ensureAgent(ctx, managed, sessionId)
+  const commands = ctx.get('commands') as CommandsLike | undefined
+  if (commands === undefined) throw new PluginError('agent-unavailable', 'the profile has no commands service', { sessionId })
+  return { sessionId, commands: commands.list(agent) }
+}
+
+/** `session/command`: execute one official slash command against the live agent. */
+export async function executeSessionCommand(ctx: Context, managed: ManagedLike | undefined, params: Record<string, unknown>): Promise<RwCommandValue> {
+  const sessionId = typeof params['sessionId'] === 'string' ? params['sessionId'] : ''
+  const line = typeof params['line'] === 'string' ? params['line'].trim() : ''
+  if (sessionId === '' || line === '') throw new PluginError('bad-request', 'session/command requires sessionId and line')
+  if (!line.startsWith('/')) throw new PluginError('bad-request', 'session/command line must start with /')
+  const agent = await ensureAgent(ctx, managed, sessionId)
+  const commands = ctx.get('commands') as CommandsLike | undefined
+  if (commands === undefined) throw new PluginError('agent-unavailable', 'the profile has no commands service', { sessionId })
+  const executed = await commands.execute(agent, line, [], new AbortController().signal)
+  if (executed === undefined) throw new PluginError('bad-request', `unknown command "${line}"`, { sessionId })
+  return { sessionId, executed: true, commandId: executed.commandId, result: executed.result }
 }
 
 /** `session/status`: live agent + pending approvals. */
