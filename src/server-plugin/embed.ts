@@ -10,7 +10,16 @@ const BOOTSTRAP_BASE = String.raw`(function () {
   var __dshRwOnboarding__ = __DISMISS_ONBOARDING__;
   var parentOrigin = typeof config.parentOrigin === 'string' ? config.parentOrigin : window.location.origin;
   if (!window[marker]) {
-    try { document.documentElement.setAttribute('data-dsh-rw-embed', ''); } catch (e) {}
+    try {
+      document.documentElement.setAttribute('data-dsh-rw-embed', '');
+      // Full mode keeps the official sidebar/rightbar/bottom slot visible (the
+      // v3 client renders the complete official shell in a full-screen iframe).
+      // The client sends dshRwFull=1; full=1 is the documented/plan spelling.
+      var initialParams = new URLSearchParams(window.location.search || '');
+      var fullParam = initialParams.get('dshRwFull');
+      var fullFallback = initialParams.get('full');
+      if (fullParam === '1' || fullFallback === '1') document.documentElement.setAttribute('data-dsh-rw-full', '');
+    } catch (e) {}
     if (config.embedCssPath) {
       var link = document.createElement('link');
       link.rel = 'stylesheet';
@@ -99,10 +108,16 @@ const BOOTSTRAP_BASE = String.raw`(function () {
 /** Outer bootstrap with the tested dismissal helper inlined for the iframe realm. */
 export const BOOTSTRAP_SCRIPT = BOOTSTRAP_BASE.replace('__DISMISS_ONBOARDING__', `(${dismissOnboarding.toString()})`)
 
-/** Hide the duplicated official navigation and let the conversation main area fill the frame. */
-export const EMBED_CSS = String.raw`html[data-dsh-rw-embed] [data-slot="sidebar"],
-html[data-dsh-rw-embed] [data-slot="sidebar"] * { display: none !important; }
-html[data-dsh-rw-embed] [data-slot="rightbar"],
-html[data-dsh-rw-embed] [data-slot="rightbar"] * { display: none !important; }
-html[data-dsh-rw-embed] [data-slot="shell.bottom"] { display: none !important; }
-html[data-dsh-rw-embed] [data-slot="root"] > div > div { grid-template-columns: minmax(0, 1fr) !important; }`
+/**
+ * Hide the duplicated official navigation and let the conversation main area fill the frame.
+ *
+ * Every rule is gated by `:not([data-dsh-rw-full])`: a full embed (v3 client:
+ * full-screen same-origin iframe of the official UI) keeps the complete official
+ * shell, so the sidebar, rightbar, bottom slot and root grid are left untouched.
+ */
+export const EMBED_CSS = String.raw`html[data-dsh-rw-embed]:not([data-dsh-rw-full]) [data-slot="sidebar"],
+html[data-dsh-rw-embed]:not([data-dsh-rw-full]) [data-slot="sidebar"] * { display: none !important; }
+html[data-dsh-rw-embed]:not([data-dsh-rw-full]) [data-slot="rightbar"],
+html[data-dsh-rw-embed]:not([data-dsh-rw-full]) [data-slot="rightbar"] * { display: none !important; }
+html[data-dsh-rw-embed]:not([data-dsh-rw-full]) [data-slot="shell.bottom"] { display: none !important; }
+html[data-dsh-rw-embed]:not([data-dsh-rw-full]) [data-slot="root"] > div > div { grid-template-columns: minmax(0, 1fr) !important; }`
