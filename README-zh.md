@@ -1,8 +1,8 @@
-# dsh-remote-workspace-server
+# dsh-remote-window-server
 
 [English](README.md) | 中文
 
-本仓库是 [dsh-remote-workspace](https://github.com/graydovee/dsh-remote-workspace) 的远端部分。
+本仓库是 [dsh-remote-window](https://github.com/graydovee/dsh-remote-window) 的远端部分。
 它是安装到 per-client DSH profile 里的普通 DeepSeek Harness 插件，**不使用 stdio**，也不监听公网
 端口：client 通过一条 SSH 连接访问一个只绑 loopback 的 DSH web 服务。
 
@@ -30,19 +30,19 @@ v2 的 server 对话由 client 原生渲染；v1 的 embed/portal 路由只作�
 ## 如何部署
 
 大多数用户不需要直接安装本仓库。client 包内置精确同版本的
-`dsh-remote-workspace-server-<client-version>.tgz`，首次连接时：
+`dsh-remote-window-server-<client-version>.tgz`，首次连接时：
 
 1. 在目标机上传/复用兼容的 Node + DSH 运行时；
-2. 创建 `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` 及四个 profile 文件；
-3. 离线解包本 tarball 到 profile 的 `node_modules/dsh-remote-workspace-server/`；
+2. 创建 `~/.dsh/profiles/graydovee-remote-window-<clientId>/` 及四个 profile 文件；
+3. 离线解包本 tarball 到 profile 的 `node_modules/dsh-remote-window-server/`；
 4. 写入版本/sha marker 并启动 profile。
 
 profile 以只绑 loopback 的 web server 启动：
 
 ```sh
 DSH_HOME="$HOME" \
-PATH="$HOME/.dsh/remote-workspace/<clientId>/runtime/node/bin:$PATH" \
-exec <dsh> --profile graydovee-remote-workspace-<clientId> \
+PATH="$HOME/.dsh/remote-window/<clientId>/runtime/node/bin:$PATH" \
+exec <dsh> --profile graydovee-remote-window-<clientId> \
   --host 127.0.0.1 --port 0 --no-open
 ```
 
@@ -62,7 +62,7 @@ pnpm test
 pnpm pack:server-plugin
 ```
 
-打包脚本输出 `dist/server-plugin/dsh-remote-workspace-server-<version>.tgz`、对应 `.sha256`，以及
+打包脚本输出 `dist/server-plugin/dsh-remote-window-server-<version>.tgz`、对应 `.sha256`，以及
 包含协议、feature 列表、`dshVersion`、字节长度和校验和的 `.manifest.json`。client 仓库内置该
 tarball，并把校验和写入 `assets/server-plugin/checksums.json`；两个仓库必须使用同一发布版本和同一
 DSH 运行时钉版。
@@ -74,12 +74,12 @@ DSH 运行时钉版。
 
 | 路径 | 内容 |
 | --- | --- |
-| `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` | per-client profile、插件、profile 文件和 `.dsh-rw/lease.json` |
-| `~/.dsh/remote-workspace/profiles/graydovee-remote-workspace-<clientId>/` | `server.log`（0600）与 `server.pid` |
+| `~/.dsh/profiles/graydovee-remote-window-<clientId>/` | per-client profile、插件、profile 文件和 `.dsh-rw/lease.json` |
+| `~/.dsh/remote-window/profiles/graydovee-remote-window-<clientId>/` | `server.log`（0600）与 `server.pid` |
 | `~/.dsh/sessions/**` | 权威的官方 JSONL 会话日志（两种执行端共用） |
 | `~/.dsh/storages/workspace.json` | 权威的官方 workspace registry |
-| `~/.dsh/remote-workspace/state/`、`locks/` | executor 记录与 bootstrap 锁 |
-| `~/.dsh/remote-workspace/<clientId>/runtime/` | 可选的独立 DSH 运行时 |
+| `~/.dsh/remote-window/state/`、`locks/` | executor 记录与 bootstrap 锁 |
+| `~/.dsh/remote-window/<clientId>/runtime/` | 可选的独立 DSH 运行时 |
 
 已退役的 `remote-server-sessions/` 目录保持不动，v2 不读取它。
 

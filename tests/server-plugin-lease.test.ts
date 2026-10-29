@@ -5,7 +5,7 @@ import type { RwProfileLease } from '../src/protocol.ts'
 const request = (instanceId: string, clientId = 'client1'): LeaseClaimRequest => ({
   clientId,
   instanceId,
-  profile: 'graydovee-remote-workspace-client1',
+  profile: 'graydovee-remote-window-client1',
   pid: 10,
   port: 3000,
   tokenFingerprint: 'abc',
@@ -13,7 +13,7 @@ const request = (instanceId: string, clientId = 'client1'): LeaseClaimRequest =>
 
 const lease = (instanceId: string, heartbeatAt: string, clientId = 'client1'): RwProfileLease => ({
   version: 1,
-  profile: 'graydovee-remote-workspace-client1',
+  profile: 'graydovee-remote-window-client1',
   clientId,
   instanceId,
   pid: 10,

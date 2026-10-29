@@ -1,7 +1,7 @@
-# dsh-remote-workspace-server v1 bundle patch.
+# dsh-remote-window-server v1 bundle patch.
 # The client installs this package into the per-client profile's
-# node_modules/dsh-remote-workspace-server and lists the package in
+# node_modules/dsh-remote-window-server and lists the package in
 # dsh.profile.bundles; this patch inserts the single Cordis host row.
 - insert:
-    - id: dsh-remote-workspace-server
-      name: dsh-remote-workspace-server
+    - id: dsh-remote-window-server
+      name: dsh-remote-window-server

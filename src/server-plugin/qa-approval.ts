@@ -2,7 +2,7 @@
  * QA-only deterministic approval gate.
  *
  * Disabled unless the per-client state directory contains
- * `remote-workspace/<clientId>/qa-approval-tool` with a tool name (or `*`).
+ * `remote-window/<clientId>/qa-approval-tool` with a tool name (or `*`).
  * When enabled, the named tool's `tools/pre-execute` waterfall returns `ask`
  * before dispatch, so the official tool registry + ApprovalService produce a
  * real `approval/asked` / `approval/decided` pair and the v2 hub has a pending

@@ -1,4 +1,4 @@
-# AGENTS.md — dsh-remote-workspace-server
+# AGENTS.md — dsh-remote-window-server
 
 本文件是 server 仓库的开发契约。用户如何部署和排障请看 README.md；这里定义跨仓库同步、wire
 协议、运行时行为、测试和发布规则。公共仓库中不得出现真实主机、用户名、路径、token 或私人部署信息。
@@ -18,7 +18,7 @@
 v2 的 server 对话由 client 原生渲染；v1 的 embed/bootstrap 路由只保留回退，不是正常流程，也不再扩展。
 本仓库不持有 client 的 SSH 凭据；模型凭据按执行端留在实际运行 agent 的一侧。
 
-client 仓库为 https://github.com/graydovee/dsh-remote-workspace。两边必须按同一发布版本、同一 DSH
+client 仓库为 https://github.com/graydovee/dsh-remote-window。两边必须按同一发布版本、同一 DSH
 运行时和同一 P1 协议协作。
 
 ## 本地命令
@@ -32,7 +32,7 @@ Node 使用 22.19 以上或 24 以上，依赖管理只用 pnpm：
     pnpm pack:server-plugin
 
 `pnpm build` 生成 `lib/plugin.js` 等运行产物；`lib/` 禁止手改，必须改 `src/` 后重新构建。
-`pnpm pack:server-plugin` 生成 `dist/server-plugin/dsh-remote-workspace-server-<version>.tgz`、
+`pnpm pack:server-plugin` 生成 `dist/server-plugin/dsh-remote-window-server-<version>.tgz`、
 `.sha256` 和 `.manifest.json`。`pnpm build:runtime` 是 v1 独立 runtime 包的遗留脚本，不是 v2 发布路径。
 
 ## 两仓逐字节同步
@@ -46,7 +46,7 @@ v2 的逐字节契约只有三个文件：
 提交前比较：
 
     for f in protocol.ts frame/codec.ts frame/mux.ts; do
-      cmp -s "src/$f" "../dsh-remote-workspace/src/$f" || echo "DIFF: $f"
+      cmp -s "src/$f" "../dsh-remote-window/src/$f" || echo "DIFF: $f"
     done
 
 旧 v1 的 `src/server/**`、`src/frame/psk.ts`、`src/provision/package-build.ts` 同步集已退出 v2 契约；
@@ -119,7 +119,7 @@ LICENSE。
 
 ## P1 wire
 
-路由前缀 `/dsh-remote-workspace-server`：
+路由前缀 `/dsh-remote-window-server`：
 
     /api/handshake          POST，返回 protocol/server/profile/capabilities/lease
     /api/rpc                POST，JSON { protocol, method, params }
@@ -143,7 +143,7 @@ RPC 方法（协议 §16 冻结）：
     session/timeline session/prompt session/approval session/status
 
 其他常量：`REMOTE_WORKSPACE_PLUGIN_PROTOCOL = 1`，`RW_ROUTE_PREFIX =
-'/dsh-remote-workspace-server'`。P1 请求必须带 protocol/client/instance 三个 header；SSE 的
+'/dsh-remote-window-server'`。P1 请求必须带 protocol/client/instance 三个 header；SSE 的
 EventSource 不能设 header，仅靠 cookie admission。
 
 ## Cordis profile patch
@@ -151,8 +151,8 @@ EventSource 不能设 header，仅靠 cookie admission。
 `cordis.patch.yml` 只挂一行：
 
     - insert:
-        - id: dsh-remote-workspace-server
-          name: dsh-remote-workspace-server
+        - id: dsh-remote-window-server
+          name: dsh-remote-window-server
 
 profile 的官方 base/web-app 已经提供 `sessionPersistence`、workspace、agent 等服务；不要再挂 v1 的
 `remote-session-persistence`、`status.json` 或 `identityFile`。插件用 `ctx.get()` 懒解析可选服务，

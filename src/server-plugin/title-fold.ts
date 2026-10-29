@@ -75,7 +75,7 @@ export class TitleFold {
       const cached = this.cache.get(sessionId, sizeBytes)
       if (cached?.facts !== undefined) return cached.facts
       try { this.cache.allowDecode(sessionId, sizeBytes) } catch (error) {
-        console.error(`[dsh-remote-workspace-server] title fold for "${sessionId}" refused: ${error instanceof Error ? error.message : String(error)}`)
+        console.error(`[dsh-remote-window-server] title fold for "${sessionId}" refused: ${error instanceof Error ? error.message : String(error)}`)
         return undefined
       }
     }
@@ -93,7 +93,7 @@ export class TitleFold {
         await handle.close().catch(() => {})
       }
     } catch (error) {
-      console.error(`[dsh-remote-workspace-server] title fold for "${sessionId}" failed: ${error instanceof Error ? error.message : String(error)}`)
+      console.error(`[dsh-remote-window-server] title fold for "${sessionId}" failed: ${error instanceof Error ? error.message : String(error)}`)
       return undefined
     } finally {
       this.release()

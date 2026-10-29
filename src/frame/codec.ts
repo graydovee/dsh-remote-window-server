@@ -1,5 +1,5 @@
 /**
- * Wire framing for the remote-workspace channel.
+ * Wire framing for the remote-window channel.
  *
  * Every frame is `type(1B) + length(4B BE) + payload`. The `json` type carries
  * the official helper RPC envelopes unchanged (they keep their own 4-byte

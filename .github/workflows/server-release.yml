@@ -2,7 +2,7 @@
 # them to a GitHub Release **of this repository**.
 #
 # The plugin downloads one of these from
-#   https://github.com/graydovee/dsh-remote-workspace-server/releases/download/<tag>/<asset>
+#   https://github.com/graydovee/dsh-remote-window-server/releases/download/<tag>/<asset>
 # and verifies it against the `.sha256` companion, so both files must be
 # attached. Tag convention: `server-v<dsh version>` (e.g. `server-v0.2.1-rc.2`) —
 # the packages are built against a dsh version, not against the plugin version.

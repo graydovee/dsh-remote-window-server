@@ -1,7 +1,7 @@
 {
-  "name": "dsh-remote-workspace-server",
+  "name": "dsh-remote-window-server",
   "version": "0.1.0-alpha.3",
-  "description": "DeepSeek Harness server plugin for dsh-remote-workspace v2: expose a per-client profile DSH to its SSH client through the P1 API, lease, managed agents, native session stream and registry guard.",
+  "description": "DeepSeek Harness server plugin for dsh-remote-window v2: expose a per-client profile DSH to its SSH client through the P1 API, lease, managed agents, native session stream and registry guard.",
   "type": "module",
   "main": "lib/plugin.js",
   "exports": {
@@ -20,7 +20,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/graydovee/dsh-remote-workspace-server"
+    "url": "https://github.com/graydovee/dsh-remote-window-server"
   },
   "publishConfig": {
     "access": "public"
@@ -82,7 +82,7 @@
     "dsh-plugin",
     "deepseek-harness",
     "dsh",
-    "remote-workspace",
+    "remote-window",
     "ssh",
     "server-package"
   ]

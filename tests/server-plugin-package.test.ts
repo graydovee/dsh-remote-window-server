@@ -15,7 +15,7 @@ describe('installable server plugin package contract', () => {
       dsh: { bundle: { patch: string } }
       files: string[]
     }
-    expect(manifest.name).toBe('dsh-remote-workspace-server')
+    expect(manifest.name).toBe('dsh-remote-window-server')
     expect(manifest.main).toBe('lib/plugin.js')
     expect(manifest.exports['.']).toBe('./lib/plugin.js')
     expect(manifest.engines.dsh).toBe('0.2.1-rc.3')
@@ -30,8 +30,8 @@ describe('installable server plugin package contract', () => {
 
   it('patch inserts exactly one v1 plugin row', () => {
     const patch = read('../cordis.patch.yml')
-    expect(patch).toContain('id: dsh-remote-workspace-server')
-    expect(patch).toContain('name: dsh-remote-workspace-server')
-    expect((patch.match(/id: dsh-remote-workspace-server/g) ?? []).length).toBe(1)
+    expect(patch).toContain('id: dsh-remote-window-server')
+    expect(patch).toContain('name: dsh-remote-window-server')
+    expect((patch.match(/id: dsh-remote-window-server/g) ?? []).length).toBe(1)
   })
 })

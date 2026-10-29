@@ -96,7 +96,7 @@ export class ApprovalHub implements ApprovalSource {
     const sessionId = String(request.agent.id ?? '')
     if (sessionId === '') return 'unavailable'
     if (preempt || this.hasSubscribers(sessionId) || process.env.DSH_RW_DEBUG === '1') {
-      console.error(`[dsh-remote-workspace-server] approval request session=${sessionId} preempt=${preempt} subscribers=${this.hasSubscribers(sessionId)} pending=${this.pending.size}`)
+      console.error(`[dsh-remote-window-server] approval request session=${sessionId} preempt=${preempt} subscribers=${this.hasSubscribers(sessionId)} pending=${this.pending.size}`)
     }
     if (!preempt && !this.hasSubscribers(sessionId)) {
       const earlier = await next()

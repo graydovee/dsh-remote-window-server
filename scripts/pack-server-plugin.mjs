@@ -1,6 +1,6 @@
 /** Build and pack the installable server plugin tarball for the QA installer.
  *
- * Output (git-ignored): dist/server-plugin/dsh-remote-workspace-server-<version>.tgz
+ * Output (git-ignored): dist/server-plugin/dsh-remote-window-server-<version>.tgz
  * plus its .sha256 and .manifest.json. The archive keeps npm's `package/`
  * prefix; the client installer strips it when extracting into the profile.
  */

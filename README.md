@@ -1,9 +1,9 @@
-# dsh-remote-workspace-server
+# dsh-remote-window-server
 
 English | [中文](README-zh.md)
 
 This repository is the remote half of
-[dsh-remote-workspace](https://github.com/graydovee/dsh-remote-workspace). It is a normal DeepSeek
+[dsh-remote-window](https://github.com/graydovee/dsh-remote-window). It is a normal DeepSeek
 Harness plugin installed into a per-client DSH profile. It does **not** use stdio and does not listen
 on a public port: the client reaches it through one SSH connection and a loopback-only DSH web server.
 
@@ -34,19 +34,19 @@ for v1 fallback and are not part of the normal v2 flow.
 ## How it is deployed
 
 Most users never install this repository directly. The client package embeds the exact matching
-`dsh-remote-workspace-server-<client-version>.tgz` and, on first connect:
+`dsh-remote-window-server-<client-version>.tgz` and, on first connect:
 
 1. uploads/selects a compatible Node + DSH runtime on the target;
-2. creates `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` with the four profile files;
-3. unpacks this tarball into the profile's `node_modules/dsh-remote-workspace-server/` offline;
+2. creates `~/.dsh/profiles/graydovee-remote-window-<clientId>/` with the four profile files;
+3. unpacks this tarball into the profile's `node_modules/dsh-remote-window-server/` offline;
 4. writes a version/sha marker and starts the profile.
 
 The profile is started with a loopback-only web server:
 
 ```sh
 DSH_HOME="$HOME" \
-PATH="$HOME/.dsh/remote-workspace/<clientId>/runtime/node/bin:$PATH" \
-exec <dsh> --profile graydovee-remote-workspace-<clientId> \
+PATH="$HOME/.dsh/remote-window/<clientId>/runtime/node/bin:$PATH" \
+exec <dsh> --profile graydovee-remote-window-<clientId> \
   --host 127.0.0.1 --port 0 --no-open
 ```
 
@@ -68,7 +68,7 @@ pnpm test
 pnpm pack:server-plugin
 ```
 
-The pack script writes `dist/server-plugin/dsh-remote-workspace-server-<version>.tgz`, its `.sha256`
+The pack script writes `dist/server-plugin/dsh-remote-window-server-<version>.tgz`, its `.sha256`
 and a `.manifest.json` containing the protocol, feature list, `dshVersion`, byte length and checksum.
 The client repository vendors that tarball and records the checksum in
 `assets/server-plugin/checksums.json`; both repositories must use the same release version and the same
@@ -81,12 +81,12 @@ provisioner so the profile files, marker, runtime and lease stay consistent.
 
 | Path | Content |
 | --- | --- |
-| `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` | per-client profile, plugin, profile files and `.dsh-rw/lease.json` |
-| `~/.dsh/remote-workspace/profiles/graydovee-remote-workspace-<clientId>/` | `server.log` (0600) and `server.pid` |
+| `~/.dsh/profiles/graydovee-remote-window-<clientId>/` | per-client profile, plugin, profile files and `.dsh-rw/lease.json` |
+| `~/.dsh/remote-window/profiles/graydovee-remote-window-<clientId>/` | `server.log` (0600) and `server.pid` |
 | `~/.dsh/sessions/**` | authoritative official JSONL session logs (shared by both modes) |
 | `~/.dsh/storages/workspace.json` | authoritative official workspace registry |
-| `~/.dsh/remote-workspace/state/`, `locks/` | executor records and bootstrap locks |
-| `~/.dsh/remote-workspace/<clientId>/runtime/` | optional isolated DSH runtime |
+| `~/.dsh/remote-window/state/`, `locks/` | executor records and bootstrap locks |
+| `~/.dsh/remote-window/<clientId>/runtime/` | optional isolated DSH runtime |
 
 The retired `remote-server-sessions/` directory is left untouched and is not read by v2.
 

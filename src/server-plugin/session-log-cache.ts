@@ -51,7 +51,7 @@ export class SessionLogCache {
     const key = this.key(sessionId, sizeBytes)
     if (this.warned.has(key)) return
     this.warned.add(key)
-    console.error(`[dsh-remote-workspace-server] session "${sessionId}" log is ${sizeBytes} bytes; decoding it once for exact session facts (subsequent opens reuse this cache and the official revision memo)`)
+    console.error(`[dsh-remote-window-server] session "${sessionId}" log is ${sizeBytes} bytes; decoding it once for exact session facts (subsequent opens reuse this cache and the official revision memo)`)
   }
 
   /** Store facts decoded by a title fold (and the event count it observed). */

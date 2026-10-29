@@ -1,6 +1,6 @@
 /**
- * v1 profile-plugin protocol shared by dsh-remote-workspace and
- * dsh-remote-workspace-server.
+ * v1 profile-plugin protocol shared by dsh-remote-window and
+ * dsh-remote-window-server.
  *
  * Wire contract: doc/refactor-v1-protocol.md (frozen §16). Keep this file
  * byte-for-byte identical in both repositories.
@@ -13,7 +13,7 @@ export const REMOTE_WORKSPACE_PLUGIN_PROTOCOL = 1 as const
 export const REMOTE_WORKSPACE_PLUGIN_VERSION = '0.1.0-alpha.3'
 
 /** Base path of the P1 plugin API on the profile server. */
-export const RW_ROUTE_PREFIX = '/dsh-remote-workspace-server' as const
+export const RW_ROUTE_PREFIX = '/dsh-remote-window-server' as const
 
 /** Exact P1 routes (protocol §4.1 / §6 / §7 / §9). */
 export const RW_PATHS = {

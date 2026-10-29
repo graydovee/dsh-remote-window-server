@@ -190,7 +190,7 @@ export class ManagedAgents {
     if (entry === undefined) return false
     this.handles.delete(sessionId)
     await entry.handle.dispose().catch(error => {
-      console.error(`[dsh-remote-workspace-server] managed agent dispose failed for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`)
+      console.error(`[dsh-remote-window-server] managed agent dispose failed for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`)
     })
     const persistence = this.ctx.get('sessionPersistence') as PersistenceLike | undefined
     await persistence?.flush().catch(() => {})

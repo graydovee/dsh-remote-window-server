@@ -33,7 +33,7 @@ function page(options: PageOptions = {}) {
   const config: Record<string, unknown> = {
     protocol: 1,
     storagePrefix: options.prefix ?? 'dshrw:p:',
-    embedCssPath: 'dsh-remote-workspace-server/embed/embed.css',
+    embedCssPath: 'dsh-remote-window-server/embed/embed.css',
   }
   const parent = { postMessage: (data: unknown, origin: string) => { posts.push({ data, origin }) } }
   const window: Record<string, unknown> = {
@@ -174,7 +174,7 @@ describe('embed bootstrap', () => {
     expect(context.appended).toHaveLength(1)
     expect(context.created[0]).toMatchObject({
       rel: 'stylesheet',
-      href: 'dsh-remote-workspace-server/embed/embed.css',
+      href: 'dsh-remote-window-server/embed/embed.css',
     })
   })
 
