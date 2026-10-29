@@ -166,6 +166,9 @@ profile 的官方 base/web-app 已经提供 `sessionPersistence`、workspace、a
 - 仓库版本等于发布版本，当前 `0.1.0-alpha.3`，两仓保持一致；内置 server tarball 版本必须精确一致。
 - `pnpm pack:server-plugin` 的 manifest 必须包含协议、feature、`dshVersion`、字节长度与 sha256；
   client 用 `scripts/bundle-server-plugin.mjs` 内置并写 `assets/server-plugin/checksums.json`。
+- npm 发布由 `.github/workflows/npm-release.yml` 在 `v*` tag 触发：typecheck/test/build 后把
+  `pnpm pack:server-plugin` 的 tarball 发到 npm（`dsh-remote-window-server`，provenance）。需要
+  仓库 secret `NPM_TOKEN` 与 workflow 的 `id-token: write`；runtime 包仍走 server-release.yml。
 - 发布前至少两仓 `pnpm typecheck && pnpm test && pnpm build`，再在隔离 `DSH_HOME` 用 rc.3 启动
   profile 做 `/api/handshake` 冒烟。版本号变更但未跑冒烟时不得宣称 verified。
 - 独立 runtime 包/`dist-runtime/` 是 v1 遗留产物；不要用它代替 v2 的 profile 插件，也不要修改全局

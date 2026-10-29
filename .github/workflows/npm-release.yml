@@ -1,0 +1,73 @@
+name: npm-release
+
+# Publishes the server plugin package (`dsh-remote-window-server`) to npm on the
+# plugin version tag (`v<version>`). The client repo bundles the exact same
+# tarball into `assets/server-plugin/`, so both repos must release one version.
+# The runtime tarballs (`node/` + `dsh/`) are a different artifact and live in
+# server-release.yml.
+#
+# npm needs the NPM_TOKEN repository secret and `id-token: write` for provenance.
+
+on:
+  push:
+    tags: ['v*', '[0-9]*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'existing plugin tag to publish (e.g. v0.1.0-alpha.3)'
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: check tag matches package.json
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          want="$(node -p "require('./package.json').version")"
+          got="${tag#v}"
+          if [ "$got" != "$want" ]; then
+            echo "tag $tag does not match package.json version $want" >&2
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+      - name: pack server plugin
+        run: |
+          set -euo pipefail
+          pnpm pack:server-plugin
+          tarball="$(ls dist/server-plugin/*.tgz | head -n 1)"
+          echo "TARBALL=$tarball" >> "$GITHUB_ENV"
+          shasum -a 256 "$tarball" | cut -d' ' -f1 > "$tarball.sha256"
+          cat "$tarball.sha256"
+          tar -tzf "$tarball" | head -n 20
+
+      - name: publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN secret is not configured" >&2
+            exit 1
+          fi
+          npm publish "$TARBALL" --access public --provenance
