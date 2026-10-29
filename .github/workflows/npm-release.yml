@@ -78,14 +78,12 @@ jobs:
 
       - name: publish to npm
         env:
+          # Optional: see the client release workflow; without a token npm
+          # falls back to Trusted Publishing via this job's OIDC identity.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DIST_TAG: ${{ steps.dist-tag.outputs.tag }}
         run: |
           set -euo pipefail
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "NPM_TOKEN secret is not configured" >&2
-            exit 1
-          fi
           # Prefix with ./ so npm treats the argument as a local tarball
           # instead of a GitHub shorthand (dist/x.tgz -> github:dist/x.tgz).
           npm publish "./$TARBALL" --access public --provenance --tag "$DIST_TAG"
