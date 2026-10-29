@@ -61,13 +61,29 @@ jobs:
           cat "$tarball.sha256"
           tar -tzf "$tarball" | head -n 20
 
+      # A prerelease version cannot be published onto the default `latest`
+      # dist-tag (npm rejects it without --tag), so derive the tag from the
+      # version: `0.1.0-alpha.3` -> `alpha`, `1.0.0` -> `latest`.
+      - name: resolve npm dist-tag
+        id: dist-tag
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          if [[ "$version" == *-* ]]; then
+            tag="${version#*-}"
+            echo "tag=${tag%%.*}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DIST_TAG: ${{ steps.dist-tag.outputs.tag }}
         run: |
           set -euo pipefail
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
             echo "NPM_TOKEN secret is not configured" >&2
             exit 1
           fi
-          npm publish "$TARBALL" --access public --provenance
+          npm publish "$TARBALL" --access public --provenance --tag "$DIST_TAG"
