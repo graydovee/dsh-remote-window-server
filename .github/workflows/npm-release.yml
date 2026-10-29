@@ -84,6 +84,16 @@ jobs:
           DIST_TAG: ${{ steps.dist-tag.outputs.tag }}
         run: |
           set -euo pipefail
+          # setup-node's registry .npmrc references the NODE_AUTH_TOKEN env;
+          # without a token configured, drop that line so npm can use the
+          # job's OIDC identity (Trusted Publishing) instead of a token.
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            npmrc="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+            if [ -f "$npmrc" ]; then
+              grep -v '_authToken' "$npmrc" > "$npmrc.tmp" || true
+              mv "$npmrc.tmp" "$npmrc"
+            fi
+          fi
           # Prefix with ./ so npm treats the argument as a local tarball
           # instead of a GitHub shorthand (dist/x.tgz -> github:dist/x.tgz).
           npm publish "./$TARBALL" --access public --provenance --tag "$DIST_TAG"
