@@ -1,58 +1,156 @@
-# Build the dsh runtime packages this project's server runs inside, and attach
-# them to a GitHub Release **of this repository**.
+# Publish the two artifacts this project owns, on the plugin tag `v<version>`:
 #
-# The plugin downloads one of these from
-#   https://github.com/graydovee/dsh-remote-window-server/releases/download/<tag>/<asset>
-# and verifies it against the `.sha256` companion, so both files must be
-# attached. Tag convention: `server-v<dsh version>` (e.g. `server-v0.2.1-rc.2`) —
-# the packages are built against a dsh version, not against the plugin version.
+#   * `dsh-remote-window-server-<version>.tgz` (+ `.sha256`, `.manifest.json`) —
+#     the server plugin package. The client repo bundles the byte-identical
+#     tarball into `assets/server-plugin/`, so both repos release one version.
+#   * `dsh-runtime-<dsh version>-<platform>-<arch>[-libc].tar.gz` (+ `.sha256`,
+#     `.manifest.json`) — the isolated `node/` + `dsh/` runtime a client uploads
+#     to a remote it cannot build for.
 #
-# Matrix: linux x64/arm64 (glibc) and darwin x64/arm64. There is deliberately no
-# Windows entry: the remote world is POSIX — every provisioning script is
-# /bin/sh + tar + chmod, and the packaging module's artifactTag() only accepts
-# linux|darwin. A Windows remote would need its own deployer first.
+# The dsh version is never written down here: it is `engines.dsh` in
+# package.json, the same field the plugin declares as its peer, so a release
+# cannot be built against a dsh the plugin does not support. Dispatch a
+# `server-v<dsh version>` tag (or run the workflow manually) to rebuild only the
+# runtime matrix for a dsh release without bumping the plugin.
+#
+# Matrix: linux x64/arm64 (glibc) and darwin x64/arm64. The builder stages POSIX
+# Node tarballs (`bin/node`, `.bin/dsh`), so Windows runtime artifacts are not
+# produced here yet; a win32 target needs the hoisted layout and `node.exe`
+# handling the client's runtime builder already implements.
 name: server-packages
 
 on:
   push:
-    tags: ['server-v*', 'v*']
+    tags: ['v*', '[0-9]*', 'server-v*']
   workflow_dispatch:
     inputs:
       dsh_version:
-        description: '@deepseek-ai/dsh version to stage'
-        required: true
-        default: '0.2.1-rc.2'
+        description: 'override the dsh version (default: engines.dsh)'
+        required: false
+        default: ''
       release_tag:
         description: 'tag to attach the assets to (must already exist)'
         required: true
-        default: 'server-v0.2.1-rc.2'
 
 permissions:
   contents: write
 
 env:
-  DSH_VERSION: ${{ inputs.dsh_version || '0.2.1-rc.2' }}
+  # The client's `NODE_VERSION_CANDIDATES` pins the same build; artifacts that
+  # disagree with it are rejected by the launcher probe on the remote.
+  NODE_VERSION: '24.21.0'
+  # The compatibility table (and the snapshot projected from it) lives with the
+  # plugin; this repository downloads the client release asset to build exactly
+  # the matrix that plugin version supports.
+  CLIENT_REPO: graydovee/dsh-remote-window
 
 jobs:
-  build:
-    name: build ${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.libc && format('-{0}', matrix.libc) || '' }}
+  resolve:
+    name: resolve versions
+    runs-on: ubuntu-latest
+    outputs:
+      dsh: ${{ steps.version.outputs.dsh }}
+      plugin: ${{ steps.version.outputs.plugin }}
+      tag: ${{ steps.version.outputs.tag }}
+      interval: ${{ steps.compat.outputs.interval }}
+      matrix: ${{ steps.compat.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          set -euo pipefail
+          plugin="$(node -p "require('./package.json').version")"
+          dsh="$(node -p "require('./package.json').engines.dsh")"
+          if [ -n "${{ inputs.dsh_version }}" ]; then dsh="${{ inputs.dsh_version }}"; fi
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="${{ github.ref_name }}"
+            # A `server-v<dsh>` tag is the authority for a dsh-only rebuild: it
+            # exists to ship a runtime the manifest has not caught up with yet.
+            case "$tag" in server-v*) dsh="${tag#server-v}" ;; esac
+          else
+            tag="${{ inputs.release_tag }}"
+          fi
+          {
+            echo "dsh=$dsh"
+            echo "plugin=$plugin"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+          echo "plugin=$plugin dsh=$dsh tag=$tag"
+
+      - id: compat
+        run: |
+          set -euo pipefail
+          plugin="${{ steps.version.outputs.plugin }}"
+          dsh="${{ steps.version.outputs.dsh }}"
+          url="https://github.com/${CLIENT_REPO}/releases/download/v${plugin}/runtime-compat.json"
+          # A missing snapshot means this plugin version was never released in
+          # the client repository, so the two repositories are out of step.
+          curl -fsSL --retry 3 --retry-connrefused -o runtime-compat.json "$url" || {
+            echo "cannot download $url" >&2
+            exit 1
+          }
+          interval="$(node -p "const c=require('./runtime-compat.json'); c.dsh.min===c.dsh.max?c.dsh.min:c.dsh.min+'..'+c.dsh.max")"
+          matrix="$(node -e '
+            const compat = require("./runtime-compat.json")
+            const dsh = process.argv[1]
+            const buildable = new Set(["linux-x64-gnu", "linux-arm64-gnu", "darwin-x64", "darwin-arm64"])
+            const entry = compat.runtimes.find(item => item.dsh === dsh)
+            if (!entry) { console.error("snapshot has no runtime entry for dsh " + dsh); process.exit(1) }
+            const slots = []
+            for (const platform of entry.platforms) {
+              if (!buildable.has(platform)) continue
+              const parts = platform.split("-")
+              slots.push({ platform: parts[0], arch: parts[1], libc: parts[2] || "", node_arch: parts[1] })
+            }
+            if (slots.length === 0) { console.error("nothing to build for dsh " + dsh); process.exit(1) }
+            process.stdout.write(JSON.stringify({ include: slots }))
+          ' "$dsh")"
+          {
+            echo "interval=$interval"
+            echo "matrix=$matrix"
+          } >> "$GITHUB_OUTPUT"
+          echo "interval=$interval matrix=$matrix"
+
+  plugin:
+    name: pack server plugin
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: check sources
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm typecheck
+          pnpm test
+          pnpm build
+      - name: pack
+        run: pnpm pack:server-plugin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-plugin
+          path: |
+            dist/server-plugin/*.tgz
+            dist/server-plugin/*.tgz.sha256
+            dist/server-plugin/*.tgz.manifest.json
+          if-no-files-found: error
+
+  runtime:
+    name: runtime ${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.libc && format('-{0}', matrix.libc) || '' }}
+    needs: resolve
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: linux
-            arch: x64
-            libc: gnu
-          - platform: linux
-            arch: arm64
-            libc: gnu
-          - platform: darwin
-            arch: x64
-            libc: ''
-          - platform: darwin
-            arch: arm64
-            libc: ''
+      # Derived from the client's compatibility snapshot: the release builds only
+      # the dsh releases and platforms that plugin version declares, and a
+      # platform this builder cannot stage (win32 today) is reported in the notes
+      # as "not published yet" instead of failing the release.
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -60,8 +158,6 @@ jobs:
         with:
           node-version: '24'
 
-      # The plugin sources must be green before their runtime is packaged; a tag
-      # on a broken tree would publish artifacts nobody can reproduce.
       - uses: pnpm/action-setup@v4
 
       - name: check sources
@@ -72,8 +168,8 @@ jobs:
           pnpm test
           pnpm build
 
-      # The build drives `node <pnpm.cjs> -C <stage> add @deepseek-ai/dsh`, so it
-      # needs a pnpm *file* plus a node binary, not a PATH shim.
+      # The builder drives `node <pnpm.cjs> -C <stage> add @deepseek-ai/dsh`, so
+      # it needs a pnpm *file* plus a node binary, not a PATH shim.
       - name: host toolchain
         run: |
           set -euo pipefail
@@ -82,48 +178,84 @@ jobs:
           test -f "$PNPM_CJS" || { echo "pnpm.cjs not found under $(npm root -g)" >&2; exit 1; }
           echo "DSH_HOST_NODE=$(command -v node)" >> "$GITHUB_ENV"
           echo "DSH_HOST_PNPM=$PNPM_CJS" >> "$GITHUB_ENV"
-          node --version
-          node "$PNPM_CJS" --version
 
-      - name: build package
+      - name: download node
+        run: |
+          set -euo pipefail
+          name="node-v${NODE_VERSION}-${{ matrix.platform }}-${{ matrix.node_arch }}.tar.gz"
+          curl -fsSL --retry 3 --retry-connrefused -o "$RUNNER_TEMP/$name" \
+            "https://nodejs.org/dist/v${NODE_VERSION}/$name"
+          echo "NODE_ARCHIVE=$RUNNER_TEMP/$name" >> "$GITHUB_ENV"
+
+      - name: build runtime
         shell: bash
         run: |
           set -euo pipefail
-          args=(--dsh-version "$DSH_VERSION" --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}" --out dist-server)
+          args=(--dsh-version "${{ needs.resolve.outputs.dsh }}"
+                --platform "${{ matrix.platform }}"
+                --arch "${{ matrix.arch }}"
+                --node-archive "$NODE_ARCHIVE"
+                --out dist-runtime)
           if [ -n "${{ matrix.libc }}" ]; then args+=(--libc "${{ matrix.libc }}"); fi
-          node scripts/build-server-package.mjs "${args[@]}"
-          ls -l dist-server
+          node scripts/build-runtime-artifact.mjs "${args[@]}"
+          ls -l dist-runtime
 
       - uses: actions/upload-artifact@v4
         with:
-          name: server-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.libc && format('-{0}', matrix.libc) || '' }}
+          name: runtime-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.libc && format('-{0}', matrix.libc) || '' }}
           path: |
-            dist-server/*.tar.gz
-            dist-server/*.tar.gz.sha256
-            dist-server/*.manifest.json
+            dist-runtime/*.tar.gz
+            dist-runtime/*.tar.gz.sha256
+            dist-runtime/*.manifest.json
           if-no-files-found: error
 
   release:
     name: publish release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
+    needs: [resolve, plugin, runtime]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
-          path: dist-server
+          path: dist
           merge-multiple: true
 
+      - name: download compatibility snapshot
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --retry-connrefused \
+            -o dist/runtime-compat.json \
+            "https://github.com/${CLIENT_REPO}/releases/download/v${{ needs.resolve.outputs.plugin }}/runtime-compat.json"
+
+      # The body is generated: the supported DSH interval, the platforms that got
+      # an artifact and the ones that did not, plus a sha256 per file. Hand-written
+      # notes drifted from the manifest before.
+      - name: render release notes
+        run: |
+          set -euo pipefail
+          node scripts/render-release-notes.mjs \
+            --compat dist/runtime-compat.json \
+            --plugin "${{ needs.resolve.outputs.plugin }}" \
+            --dsh "${{ needs.resolve.outputs.dsh }}" \
+            --dist dist \
+            --out release-notes.md
+          cat release-notes.md
+
       - name: list assets
-        run: ls -l dist-server
+        run: ls -l dist
 
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name != '' && github.ref_name || inputs.release_tag }}
-          name: server packages for dsh ${{ env.DSH_VERSION }}
-          generate_release_notes: true
+          tag_name: ${{ needs.resolve.outputs.tag }}
+          name: dsh-remote-window-server ${{ needs.resolve.outputs.plugin }} · runtime for dsh ${{ needs.resolve.outputs.dsh }}
+          body_path: release-notes.md
           fail_on_unmatched_files: true
           files: |
-            dist-server/*.tar.gz
-            dist-server/*.tar.gz.sha256
-            dist-server/*.manifest.json
+            dist/*.tgz
+            dist/*.tgz.sha256
+            dist/*.tgz.manifest.json
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/*.manifest.json
+            dist/runtime-compat.json
