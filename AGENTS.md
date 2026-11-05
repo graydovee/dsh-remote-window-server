@@ -33,7 +33,9 @@ Node 使用 22.19 以上或 24 以上，依赖管理只用 pnpm：
 
 `pnpm build` 生成 `lib/plugin.js` 等运行产物；`lib/` 禁止手改，必须改 `src/` 后重新构建。
 `pnpm pack:server-plugin` 生成 `dist/server-plugin/dsh-remote-window-server-<version>.tgz`、
-`.sha256` 和 `.manifest.json`。`pnpm build:runtime` 是 v1 独立 runtime 包的遗留脚本，不是 v2 发布路径。
+`.sha256` 和 `.manifest.json`。`pnpm build:runtime` 生成 `dist-runtime/dsh-runtime-<dsh 版本>-<平台>-<架构>.tar.gz`
+（`node/` + `dsh/` 布局）——它是 client 在远端装隔离运行时用的产物，**不能**代替 profile 插件；
+两者都由 `.github/workflows/server-release.yml` 在 `v*` tag 发布，dsh 版本取自 `engines.dsh`。
 
 ## 两仓逐字节同步
 
@@ -163,7 +165,10 @@ profile 的官方 base/web-app 已经提供 `sessionPersistence`、workspace、a
 - 运行时契约唯一来源 `DSH_VERIFIED_RUNTIME`，当前只接受实测 `0.2.1-rc.3`。
 - `engines.dsh` 与全部 `@deepseek-ai/dsh-*` peer/dependency 精确钉在 `0.2.1-rc.3`；zod `4.4.3`；
   `engines.node` 保持 `^22.19.0 || >=24.0.0`。
-- 仓库版本等于发布版本，当前 `0.1.0-alpha.3`，两仓保持一致；内置 server tarball 版本必须精确一致。
+- 仓库版本等于发布版本，当前 `0.1.0-alpha.5`，两仓保持一致；内置 server tarball 版本必须精确一致。
+- `engines.dsh` 与 `@deepseek-ai/dsh-*` peer 写区间 `>=0.2.1-rc.2 <=0.2.1-rc.5`（与 client 的
+  `compat/runtimes.json` 同一区间），本仓安装/测试用的 dsh 包钉区间内最新版本；上游发新 dsh 时先改区间
+  与钉版，再重打包并让 client 重新 bundle。
 - `pnpm pack:server-plugin` 的 manifest 必须包含协议、feature、`dshVersion`、字节长度与 sha256；
   client 用 `scripts/bundle-server-plugin.mjs` 内置并写 `assets/server-plugin/checksums.json`。
 - npm 发布由 `.github/workflows/npm-release.yml` 在 `v*` tag 触发：typecheck/test/build 后把
@@ -171,8 +176,16 @@ profile 的官方 base/web-app 已经提供 `sessionPersistence`、workspace、a
   仓库 secret `NPM_TOKEN` 与 workflow 的 `id-token: write`；runtime 包仍走 server-release.yml。
 - 发布前至少两仓 `pnpm typecheck && pnpm test && pnpm build`，再在隔离 `DSH_HOME` 用 rc.3 启动
   profile 做 `/api/handshake` 冒烟。版本号变更但未跑冒烟时不得宣称 verified。
-- 独立 runtime 包/`dist-runtime/` 是 v1 遗留产物；不要用它代替 v2 的 profile 插件，也不要修改全局
-  runtime。
+- `dist-runtime/` 的隔离 runtime 包由 `server-release.yml` 发布，矩阵来自 client release 资产
+  `runtime-compat.json`（client 的 `compat/runtimes.json` 投影）里该 dsh 声明的平台，并且只构建本仓
+  builder 能 stage 的 POSIX 布局（linux x64/arm64 gnu、darwin x64/arm64）；win32 目标尚未纳入（builder
+  只处理 POSIX Node 布局），release 正文会把它标成「not published yet」而不是让发布失败。dsh 版本永远
+  取自 `engines.dsh`（`server-v<dsh>` tag / dispatch 才可覆盖），不在这里手写；缺失快照视为两仓版本
+  不同步，直接失败。
+- release 正文由 `scripts/render-release-notes.mjs` 生成：支持的 dsh 区间、哪些平台有产物、哪些还没有、
+  以及每个产物的 sha256；`runtime-compat.json` 同时作为资产上传。不要改回
+  `generate_release_notes: true` 的手写/自动正文（历史上正文写着 rc.2，而包里要求 rc.3）。
+- 不要用它代替 profile 插件，也不要修改全局 runtime。
 
 ## 文档
 

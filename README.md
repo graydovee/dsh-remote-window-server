@@ -9,13 +9,15 @@ on a public port: the client reaches it through one SSH connection and a loopbac
 
 ## Compatibility
 
-| Server plugin | Verified DSH runtime | Status |
+| Server plugin | Supported DSH runtime | Status |
 | --- | --- | --- |
 | 0.1.0-alpha.3 | 0.2.1-rc.3 | verified |
+| 0.1.0-alpha.4 | 0.2.1-rc.3 | verified |
+| 0.1.0-alpha.5 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | verified automatically; rc.3 also run end-to-end |
 
-`engines.dsh` and every `@deepseek-ai/dsh-*` peer are pinned to that exact runtime. The package manifest
-records `dshVersion: 0.2.1-rc.3`; an unverified runtime is refused by the client instead of failing
-halfway. `0.2.1-rc.2` is not in the verified set for this release.
+`engines.dsh` and every `@deepseek-ai/dsh-*` peer accept that interval, while the packages this repository
+installs and tests against are pinned to the newest release inside it. A runtime outside the interval is
+refused by the client instead of failing halfway.
 
 ## What runs where
 

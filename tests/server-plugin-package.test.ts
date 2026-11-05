@@ -18,7 +18,12 @@ describe('installable server plugin package contract', () => {
     expect(manifest.name).toBe('dsh-remote-window-server')
     expect(manifest.main).toBe('lib/plugin.js')
     expect(manifest.exports['.']).toBe('./lib/plugin.js')
-    expect(manifest.engines.dsh).toBe('0.2.1-rc.3')
+    // The plugin accepts the whole verified interval; the client picks an exact
+    // runtime inside it, so the manifest must not pin one release.
+    expect(manifest.engines.dsh).toBe('>=0.2.1-rc.2 <=0.2.1-rc.5')
+    for (const [name, range] of Object.entries(manifest.peerDependencies ?? {})) {
+      if (/^@deepseek-ai\/dsh(-|$)/u.test(name)) expect(range, name).toBe('>=0.2.1-rc.2 <=0.2.1-rc.5')
+    }
     expect(manifest.dsh.bundle.patch).toBe('./cordis.patch.yml')
     expect(manifest.files).toContain('cordis.patch.yml')
   })
