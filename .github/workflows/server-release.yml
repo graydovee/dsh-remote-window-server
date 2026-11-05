@@ -52,43 +52,54 @@ jobs:
       dsh: ${{ steps.version.outputs.dsh }}
       plugin: ${{ steps.version.outputs.plugin }}
       tag: ${{ steps.version.outputs.tag }}
-      interval: ${{ steps.compat.outputs.interval }}
-      matrix: ${{ steps.compat.outputs.matrix }}
+      interval: ${{ steps.version.outputs.interval }}
+      matrix: ${{ steps.version.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
       - id: version
         run: |
           set -euo pipefail
           plugin="$(node -p "require('./package.json').version")"
-          dsh="$(node -p "require('./package.json').engines.dsh")"
-          if [ -n "${{ inputs.dsh_version }}" ]; then dsh="${{ inputs.dsh_version }}"; fi
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            tag="${{ github.ref_name }}"
-            # A `server-v<dsh>` tag is the authority for a dsh-only rebuild: it
-            # exists to ship a runtime the manifest has not caught up with yet.
-            case "$tag" in server-v*) dsh="${tag#server-v}" ;; esac
-          else
-            tag="${{ inputs.release_tag }}"
-          fi
-          {
-            echo "dsh=$dsh"
-            echo "plugin=$plugin"
-            echo "tag=$tag"
-          } >> "$GITHUB_OUTPUT"
-          echo "plugin=$plugin dsh=$dsh tag=$tag"
-
-      - id: compat
-        run: |
-          set -euo pipefail
-          plugin="${{ steps.version.outputs.plugin }}"
-          dsh="${{ steps.version.outputs.dsh }}"
+          case "${{ github.ref_type }}" in
+            tag) tag="${{ github.ref_name }}" ;;
+            *) tag="${{ inputs.release_tag }}" ;;
+          esac
+          # The snapshot is the authority for which runtimes this plugin version
+          # supports; a missing snapshot means the two repositories are out of
+          # step, so fail before doing any work.
           url="https://github.com/${CLIENT_REPO}/releases/download/v${plugin}/runtime-compat.json"
-          # A missing snapshot means this plugin version was never released in
-          # the client repository, so the two repositories are out of step.
           curl -fsSL --retry 3 --retry-connrefused -o runtime-compat.json "$url" || {
             echo "cannot download $url" >&2
             exit 1
           }
+          # dsh resolution order: explicit dispatch input, then a
+          # `server-v<dsh>` tag (a dsh-only rebuild), then `engines.dsh` when it
+          # is a single version, and finally the newest runtime in the snapshot
+          # when the plugin declares an interval.
+          declared="$(node -p "require('./package.json').engines.dsh")"
+          override=""
+          case "$tag" in server-v*) override="${tag#server-v}" ;; esac
+          if [ -n "${{ inputs.dsh_version }}" ]; then override="${{ inputs.dsh_version }}"; fi
+          dsh="$(node -e '
+            const compat = require("./runtime-compat.json")
+            const declared = process.argv[1]
+            const override = process.argv[2]
+            const newest = compat.runtimes?.[0]?.dsh
+            if (override) {
+              if (!compat.runtimes.some(item => item.dsh === override)) {
+                console.error("snapshot has no runtime entry for dsh " + override)
+                process.exit(1)
+              }
+              process.stdout.write(override)
+            } else if (/^\d+\.\d+\.\d+([-+].*)?$/.test(declared)) {
+              process.stdout.write(declared)
+            } else if (newest) {
+              process.stdout.write(newest)
+            } else {
+              console.error("cannot resolve a dsh version from " + declared)
+              process.exit(1)
+            }
+          ' "$declared" "$override")"
           interval="$(node -p "const c=require('./runtime-compat.json'); c.dsh.min===c.dsh.max?c.dsh.min:c.dsh.min+'..'+c.dsh.max")"
           matrix="$(node -e '
             const compat = require("./runtime-compat.json")
@@ -106,10 +117,14 @@ jobs:
             process.stdout.write(JSON.stringify({ include: slots }))
           ' "$dsh")"
           {
+            echo "dsh=$dsh"
+            echo "plugin=$plugin"
+            echo "tag=$tag"
             echo "interval=$interval"
             echo "matrix=$matrix"
           } >> "$GITHUB_OUTPUT"
-          echo "interval=$interval matrix=$matrix"
+          echo "plugin=$plugin dsh=$dsh tag=$tag interval=$interval"
+          echo "matrix=$matrix"
 
   plugin:
     name: pack server plugin

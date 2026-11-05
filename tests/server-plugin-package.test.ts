@@ -12,6 +12,7 @@ describe('installable server plugin package contract', () => {
       main: string
       exports: Record<string, unknown>
       engines: { dsh: string }
+      peerDependencies?: Record<string, string>
       dsh: { bundle: { patch: string } }
       files: string[]
     }
