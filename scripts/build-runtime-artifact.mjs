@@ -46,6 +46,10 @@ async function sha256(path) {
 async function findPnpm() {
   const explicit = arg('pnpm', '')
   if (explicit !== '') return resolve(explicit)
+  // CI installs pnpm as a package and exports the file; the client uses the same
+  // two environment overrides, so keep the names identical.
+  const fromEnv = process.env.DSH_HOST_PNPM ?? ''
+  if (fromEnv !== '') return resolve(fromEnv)
   const root = join(homedir(), '.dsh', 'dsh-runtimes')
   for (const entry of await readdir(root).catch(() => [])) {
     for (const candidate of [
@@ -103,7 +107,7 @@ if (nodeArchive === '' && nodeDir === '') {
   console.error('[runtime-artifact] pass --node-archive <platform Node tarball> or --node-dir <extracted Node prefix>')
   process.exit(2)
 }
-const nodeBin = resolve(arg('node-bin', process.execPath))
+const nodeBin = resolve(arg('node-bin', process.env.DSH_HOST_NODE ?? process.execPath))
 const pnpmCjs = await findPnpm()
 const name = `dsh-runtime-${dshVersion}-${platform}-${arch}.tar.gz`
 const work = resolve(arg('work', join(outDir, `.stage-${platform}-${arch}-${process.pid}`)))
