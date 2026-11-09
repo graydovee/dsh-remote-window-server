@@ -10,7 +10,7 @@
 export const REMOTE_WORKSPACE_PLUGIN_PROTOCOL = 1 as const
 
 /** Plugin version this client build expects; the server package must match exactly. */
-export const REMOTE_WORKSPACE_PLUGIN_VERSION = '0.1.0-alpha.5'
+export const REMOTE_WORKSPACE_PLUGIN_VERSION = '0.1.0-alpha.6'
 
 /** Base path of the P1 plugin API on the profile server. */
 export const RW_ROUTE_PREFIX = '/dsh-remote-window-server' as const

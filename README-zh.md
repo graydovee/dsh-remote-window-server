@@ -11,10 +11,12 @@
 | Server 插件 | 已验证 DSH 运行时 | 状态 |
 | --- | --- | --- |
 | 0.1.0-alpha.3 | 0.2.1-rc.3 | verified |
+| 0.1.0-alpha.4 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | verified automatically |
+| 0.1.0-alpha.5 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | verified automatically |
+| 0.1.0-alpha.6 | >= 0.2.1-rc.2 <= 0.2.2-rc.1 | 0.2.2-rc.1 上自动验证通过；真机验证待跑 |
 
-`engines.dsh` 和全部 `@deepseek-ai/dsh-*` peer 都精确钉在该运行时。包 manifest 记录
-`dshVersion: 0.2.1-rc.3`；未验证运行时会由 client 直接拒绝，而不是跑到一半失败。本版本不再默认接受
-`0.2.1-rc.2`。
+`engines.dsh` 和全部 `@deepseek-ai/dsh-*` peer 写同一区间，本仓安装与测试的包钉区间内最新版本
+`0.2.2-rc.1`（包 manifest 记录 `dshVersion`）。区间外的运行时会由 client 直接拒绝，而不是跑到一半失败。
 
 ## 各自负责什么
 
@@ -87,7 +89,7 @@ DSH 运行时钉版。
 
 | 症状 | 含义 |
 | --- | --- |
-| `incompatible-version` | client/server 运行时不在已验证集合；安装 DSH `0.2.1-rc.3`，或在 client 上显式豁免该精确版本。 |
+| `incompatible-version` | client/server 运行时不在已验证集合；安装区间内的 DSH（`0.2.1-rc.2 … 0.2.2-rc.1`），或在 client 上显式豁免该精确版本。 |
 | `profile-in-use` | 另一个存活实例持有该 client profile 的租约。关闭另一实例，或等待 20 s TTL 过期。 |
 | `profile-foreign-client` | profile 属于另一个 `clientId`，不要复用。 |
 | `plugin-profile-not-managed` | client 拒绝修改不是它 provisioning 的 profile。 |

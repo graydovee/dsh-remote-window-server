@@ -24,12 +24,16 @@ import type {} from '@deepseek-ai/dsh-sandbox'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import { SshRpcPeer, SSH_PROTOCOL_VERSION } from '@deepseek-ai/dsh-ssh/protocol'
 import {
+  deleteResultSchema,
   editResultSchema,
   editSchema,
   entriesSchema,
   environmentSchema,
   helloSchema,
+  hunkSchema,
   intentSchema,
+  moveOptionsSchema,
+  moveResultSchema,
   policySchema,
   processIdSchema,
   targetSchema,
@@ -83,6 +87,23 @@ const editRequest = z.object({
   target: targetField,
   edit: editSchema,
   expected: versionField.optional(),
+  policy: policySchema,
+}).strict()
+const patchRequest = z.object({
+  target: targetField,
+  hunks: z.array(hunkSchema),
+  expected: versionField.optional(),
+  policy: policySchema,
+}).strict()
+const deleteRequest = z.object({
+  target: targetField,
+  expected: versionField.optional(),
+  policy: policySchema,
+}).strict()
+const moveRequest = z.object({
+  source: targetField,
+  destination: targetField,
+  options: moveOptionsSchema.optional(),
   policy: policySchema,
 }).strict()
 const readBytesRequest = z.object({ target: targetField, maxBytes: z.number().int().positive() }).strict()
@@ -294,14 +315,38 @@ export class RemoteExecutionServer {
     this.lease.unref()
   }
 
-  /** Resolve a policy's workspace root on this host before the provider sees it. */
+  /**
+   * Resolve every policy path on this host before the provider sees it.
+   *
+   * The client's `sandboxPolicy.resolve()` speaks about *its* world; the remote
+   * provider fences against paths in *this* one, so the workspace root and each
+   * additional writable root are canonicalized here. A root that cannot be
+   * resolved fails the call: the enforcing backend rejects unusable roots per
+   * call, and silently dropping one would widen or narrow the fence invisibly.
+   */
   private async resolvePolicy(
     raw: unknown,
     signal: AbortSignal,
-  ): Promise<{ mode: 'read-only' | 'workspace-write' | 'danger-full-access'; workspaceRoot: string; sessionId?: string }> {
+  ): Promise<{
+    mode: 'read-only' | 'workspace-write' | 'danger-full-access'
+    workspaceRoot: string
+    additionalWritableRoots?: string[]
+    sessionId?: string
+  }> {
     const parsed = policySchema.parse(raw)
-    const target = await this.options.ctx.fs.resolve(parsed.workspaceRoot, { signal })
-    return { ...parsed, workspaceRoot: this.options.ctx.fs.processPath(target) }
+    const canonical = async (path: string): Promise<string> => {
+      const target = await this.options.ctx.fs.resolve(path, { signal })
+      return this.options.ctx.fs.processPath(target)
+    }
+    // Extra roots only fence `workspace-write`; the enforcing backend ignores
+    // them under the other modes, so a stale extra root there must not fail a
+    // call that grants nothing anyway.
+    const roots = parsed.mode === 'workspace-write' ? parsed.additionalWritableRoots : undefined
+    return {
+      ...parsed,
+      workspaceRoot: await canonical(parsed.workspaceRoot),
+      ...(roots === undefined ? {} : { additionalWritableRoots: await Promise.all(roots.map(async root => await canonical(root))) }),
+    }
   }
 
   private async dispatch(method: string, raw: unknown, requestSignal: AbortSignal): Promise<unknown> {
@@ -480,6 +525,38 @@ export class RemoteExecutionServer {
         input.expected,
         signal,
         resolved as Parameters<typeof ctx.fs.editText>[4],
+      ))
+    }
+    if (method === 'fs.patch') {
+      const input = patchRequest.parse(raw)
+      const resolved = await this.resolvePolicy(input.policy, signal)
+      return editResultSchema.parse(await ctx.fs.patchText(
+        input.target,
+        input.hunks as Parameters<typeof ctx.fs.patchText>[1],
+        input.expected,
+        signal,
+        resolved as Parameters<typeof ctx.fs.patchText>[4],
+      ))
+    }
+    if (method === 'fs.delete') {
+      const input = deleteRequest.parse(raw)
+      const resolved = await this.resolvePolicy(input.policy, signal)
+      return deleteResultSchema.parse(await ctx.fs.deleteFile(
+        input.target,
+        input.expected,
+        signal,
+        resolved as Parameters<typeof ctx.fs.deleteFile>[3],
+      ))
+    }
+    if (method === 'fs.move') {
+      const input = moveRequest.parse(raw)
+      const resolved = await this.resolvePolicy(input.policy, signal)
+      return moveResultSchema.parse(await ctx.fs.moveFile(
+        input.source,
+        input.destination,
+        (input.options ?? {}) as Parameters<typeof ctx.fs.moveFile>[2],
+        signal,
+        resolved as Parameters<typeof ctx.fs.moveFile>[4],
       ))
     }
     throw new Error(`unknown remote workspace operation "${method}"`)

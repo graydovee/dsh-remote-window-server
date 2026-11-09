@@ -14,6 +14,7 @@ on a public port: the client reaches it through one SSH connection and a loopbac
 | 0.1.0-alpha.3 | 0.2.1-rc.3 | verified |
 | 0.1.0-alpha.4 | 0.2.1-rc.3 | verified |
 | 0.1.0-alpha.5 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | verified automatically; rc.3 also run end-to-end |
+| 0.1.0-alpha.6 | >= 0.2.1-rc.2 <= 0.2.2-rc.1 | verified automatically on 0.2.2-rc.1; real-host run pending |
 
 `engines.dsh` and every `@deepseek-ai/dsh-*` peer accept that interval, while the packages this repository
 installs and tests against are pinned to the newest release inside it. A runtime outside the interval is
@@ -96,7 +97,7 @@ The retired `remote-server-sessions/` directory is left untouched and is not rea
 
 | Symptom | Meaning |
 | --- | --- |
-| `incompatible-version` | Client/server runtime is not in the verified set; install DSH `0.2.1-rc.3` or use the explicit version exemption on the client. |
+| `incompatible-version` | Client/server runtime is not in the verified set; install DSH inside the supported interval (`0.2.1-rc.2 … 0.2.2-rc.1`) or use the explicit version exemption on the client. |
 | `profile-in-use` | Another live instance holds this client profile's lease. Close the other client or wait for the 20 s TTL to expire. |
 | `profile-foreign-client` | The profile belongs to another `clientId`; do not reuse it. |
 | `plugin-profile-not-managed` | The client refused to modify a profile it did not provision. |

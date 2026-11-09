@@ -30,6 +30,11 @@ export async function withFileLock<T>(path: string, operation: () => Promise<T>,
     try {
       handle = await open(lockPath, 'wx', 0o600)
       await handle.writeFile(`${process.pid}\n`, 'utf8')
+      // The lock outlives the handle in name only: holding no descriptor after
+      // the write means a garbage-collected FileHandle can never surface, and
+      // Node 26 turns that into a fatal error (dsh 0.2.2 requires Node >= 24.9).
+      await handle.close()
+      handle = undefined
       break
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code
