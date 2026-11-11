@@ -1,5 +1,5 @@
 /**
- * dsh-remote-window-server v1 profile plugin (Phase A skeleton).
+ * dsh-remote-workspace-server v1 profile plugin (Phase A skeleton).
  *
  * Runs inside a per-client profile's `dsh web` process and exposes the P1
  * client-host API (handshake/lease/RPC/SSE/mux) plus the embed injection.
@@ -29,6 +29,7 @@ import {
   type RwWorkspaceRow,
 } from '../protocol.ts'
 import { BOOTSTRAP_SCRIPT, EMBED_CSS } from './embed.ts'
+import { ClientTargetsSnapshot, emptyClientTargets } from './client-targets.ts'
 import { PluginError, errorValue, httpStatusFor, scrubSecrets } from './errors.ts'
 import { ProfileLease } from './lease.ts'
 import { RegistryGuard } from './registry-guard.ts'
@@ -47,7 +48,7 @@ import { renameStoredSession } from './session-rename.ts'
 import { PersistBridge } from './persist.ts'
 
 /** Cordis row name. */
-export const name = 'dsh-remote-window-server'
+export const name = 'dsh-remote-workspace-server'
 
 /** The web carrier is the only required service; everything else is optional and probed. */
 // `sessionController` is deliberately NOT a static inject: it depends on
@@ -196,6 +197,8 @@ export interface PluginState {
   readonly paths: PluginPaths
   readonly pluginVersion: string
   readonly titleFold: TitleFold
+  /** Last connection snapshot the client host published (protocol §16.14). */
+  clientTargets?: ClientTargetsSnapshot
   managed?: ManagedAgents
   executor?: ExecutorStore
   persist?: PersistBridge
@@ -276,7 +279,7 @@ function resolvePaths(ctx: Context, config: PluginOptions): PluginPaths | undefi
   if (profile === undefined || profile === '') return undefined
   const home = config.home ?? profileContext?.home ?? process.env['DSH_HOME'] ?? join(process.env['HOME'] ?? process.cwd(), '.dsh')
   const profileDir = config.profileDir ?? profileContext?.dir ?? join(home, 'profiles', profile)
-  const suffix = profile.startsWith('graydovee-remote-window-') ? profile.slice('graydovee-remote-window-'.length) : profile
+  const suffix = profile.startsWith('graydovee-remote-workspace-') ? profile.slice('graydovee-remote-workspace-'.length) : profile
   const clientId = config.clientId ?? suffix
   return {
     profile,
@@ -285,7 +288,7 @@ function resolvePaths(ctx: Context, config: PluginOptions): PluginPaths | undefi
     home,
     registryFile: config.registryFile ?? join(home, 'storages', 'workspace.json'),
     leaseFile: join(profileDir, '.dsh-rw', 'lease.json'),
-    lockDir: join(home, 'remote-window', 'locks'),
+    lockDir: join(home, 'remote-workspace', 'locks'),
   }
 }
 
@@ -298,6 +301,7 @@ function capabilities(state: PluginState): RwServerCapabilities {
     executor: 1,
     eventsSse: 1,
     muxWs: 1,
+    ...(state.clientTargets === undefined ? {} : { clientTargets: 1 as const }),
     embed: { storagePrefix: `dshrw:${state.paths.profile}:`, mode: 'reload' },
     registryWriteGuard: guard?.capability ?? 'none',
     registryReload: guard?.reload ?? 'none',
@@ -351,7 +355,7 @@ async function cancelAll(ctx: Context): Promise<{ canceled: string[] }> {
       canceled.push(String(agent.id))
       idle.push(agent.whenIdle())
     } catch (error) {
-      console.error(`[dsh-remote-window-server] cancel ${String(agent.id)} failed: ${scrubSecrets(error instanceof Error ? error.message : String(error))}`)
+      console.error(`[dsh-remote-workspace-server] cancel ${String(agent.id)} failed: ${scrubSecrets(error instanceof Error ? error.message : String(error))}`)
     }
   }
   const settled = await Promise.race([
@@ -372,7 +376,7 @@ async function cancelAll(ctx: Context): Promise<{ canceled: string[] }> {
 /** Register the handshake/lease/RPC/SSE/mux routes and embed injection. */
 function installRoutes(ctx: Context, config: PluginOptions, state: PluginState, lease: ProfileLease): void {
   const webServer = ctx.get('webServer') as WebServerLike | undefined
-  if (webServer === undefined) throw new Error('dsh-remote-window-server requires ctx.webServer')
+  if (webServer === undefined) throw new Error('dsh-remote-workspace-server requires ctx.webServer')
   const admit = (req: IncomingMessage): boolean => {
     const connection = ctx.get('connection') as ConnectionLike | undefined
     if (connection === undefined) return false
@@ -426,6 +430,18 @@ function installRoutes(ctx: Context, config: PluginOptions, state: PluginState, 
       res.end(EMBED_CSS)
     },
   }), 'dsh-rw: embed css route')
+
+  ctx.effect(() => webServer.register({
+    kind: 'exact',
+    path: RW_PATHS.clientTargets,
+    handler: (req, res) => {
+      // Admission only, exactly like the bootstrap/CSS routes: the snapshot is
+      // secret-free connection metadata, and the embedded official UI has no
+      // lease identity of its own (protocol §16.14 "读取").
+      if (!admit(req)) { sendJson(res, 401, { ok: false, error: { code: 'unauthorized', message: 'authentication required' } }); return }
+      sendOk(res, state.clientTargets?.read() ?? emptyClientTargets())
+    },
+  }), 'dsh-rw: client targets route')
 
   ctx.effect(() => webServer.register({
     kind: 'exact',
@@ -509,7 +525,7 @@ function installRoutes(ctx: Context, config: PluginOptions, state: PluginState, 
       embedCssPath: RW_PATHS.embedCss.slice(1),
     }
     // Relative URLs resolve under the portal prefix (and under the origin root when served directly);
-    // an absolute /dsh-remote-window-server/... path would escape the portal mount.
+    // an absolute /dsh-remote-workspace-server/... path would escape the portal mount.
     const injection = `<script>window.__DSH_RW_EMBED__=${JSON.stringify(embed)}</script><script src="${RW_PATHS.bootstrap.slice(1)}"></script>`
     return html.replace('<head>', `<head>${injection}`)
   }), 'dsh-rw: embed index injection')
@@ -638,7 +654,7 @@ async function sessionList(ctx: Context, state: PluginState, params: Record<stri
     try {
       summaries.push(...(await controller.list({}, AbortSignal.timeout(10_000))).items)
     } catch (error) {
-      console.error(`[dsh-remote-window-server] sessionController.list failed, falling back to persistence: ${error instanceof Error ? error.message : String(error)}`)
+      console.error(`[dsh-remote-workspace-server] sessionController.list failed, falling back to persistence: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
   if (summaries.length === 0 && persistence?.list !== undefined) {
@@ -743,6 +759,9 @@ async function dispatch(ctx: Context, state: PluginState, lease: ProfileLease, m
     }
     case RW_METHODS.release:
       await lease.release()
+      // The list belongs to the lease: a released profile must not keep showing
+      // the previous client's connections to whoever connects next.
+      state.clientTargets?.clear()
       return {}
     case RW_METHODS.status: {
       const guard = state.registerGuard?.()
@@ -981,6 +1000,14 @@ async function dispatch(ctx: Context, state: PluginState, lease: ProfileLease, m
       const result = await state.managed.releaseForSwitch(sessionId, 'local')
       return { mode: 'local', restartRequired: result.restartRequired }
     }
+    case RW_METHODS.clientTargets: {
+      // Client host → server: retain the connection list the embedded UI renders
+      // (protocol §16.14). A stale stamp is not an error: the client retries on
+      // its next tick with a newer value.
+      const store = state.clientTargets
+      if (store === undefined) throw new PluginError('internal', 'client/targets is not available in this process')
+      return store.accept(params, { leaseClientId: lease.current?.clientId })
+    }
     default:
       throw new PluginError('internal', `method ${method} is not implemented in this Phase A skeleton`, { method })
   }
@@ -990,29 +1017,29 @@ async function dispatch(ctx: Context, state: PluginState, lease: ProfileLease, m
 export function apply(ctx: Context, config: PluginOptions = {}): void {
   const paths = resolvePaths(ctx, config)
   if (paths === undefined) {
-    console.error('[dsh-remote-window-server] no profile context; the v1 plugin must run inside a dsh profile')
+    console.error('[dsh-remote-workspace-server] no profile context; the v1 plugin must run inside a dsh profile')
     return
   }
   const lease = new ProfileLease(paths.leaseFile, paths.profile, config.leaseHeartbeatMs ?? 5_000)
   const guardReady = Promise.withResolvers<void>()
   const guardReadyTimer = setTimeout(() => { guardReady.resolve() }, 2_000)
   guardReadyTimer.unref()
-  const executor = new ExecutorStore(join(paths.home, 'remote-window', 'state', 'executors'))
+  const executor = new ExecutorStore(join(paths.home, 'remote-workspace', 'state', 'executors'))
   const approvals = new ApprovalHub()
   // QA-only marker: no file in a normal deployment, so the gate is a no-op.
   // The hub lives for the plugin fiber; each agent-scoped listener only drops
   // its own registration on agent disposal.
   ctx.effect(() => () => approvals.dispose(), 'dsh-rw: approval hub lifetime')
-  const qaApprovalTool = readQaApprovalTool(join(paths.home, 'remote-window', paths.clientId, 'qa-approval-tool'))
+  const qaApprovalTool = readQaApprovalTool(join(paths.home, 'remote-workspace', paths.clientId, 'qa-approval-tool'))
   const managed = new ManagedAgents(ctx, async (sessionId, next) => { await executor.assign(sessionId, next, leaseOwner(lease), 'user') }, {
     approvals,
     approvalPreempt: qaApprovalTool !== undefined,
   })
   const sessionLogCache = new SessionLogCache()
   const persist = new PersistBridge(ctx, executor, () => leaseOwner(lease), sessionLogCache)
-  const markerPath = join(paths.home, 'remote-window', paths.clientId, 'qa-approval-tool')
-  console.error(`[dsh-remote-window-server] approval gate: ${qaApprovalTool === undefined ? 'off' : `qa(${qaApprovalTool})`} marker=${markerPath}`)
-  const state: PluginState = { paths, pluginVersion: readPluginVersion(), titleFold: new TitleFold(ctx, sessionLogCache), managed, executor, persist, approvals, approvalGate: qaApprovalTool === undefined ? 'off' : 'qa', guardReady: guardReady.promise }
+  const markerPath = join(paths.home, 'remote-workspace', paths.clientId, 'qa-approval-tool')
+  console.error(`[dsh-remote-workspace-server] approval gate: ${qaApprovalTool === undefined ? 'off' : `qa(${qaApprovalTool})`} marker=${markerPath}`)
+  const state: PluginState = { paths, pluginVersion: readPluginVersion(), titleFold: new TitleFold(ctx, sessionLogCache), clientTargets: new ClientTargetsSnapshot(), managed, executor, persist, approvals, approvalGate: qaApprovalTool === undefined ? 'off' : 'qa', guardReady: guardReady.promise }
   ctx.effect(() => installQaApprovalGate(ctx, qaApprovalTool), 'dsh-rw: QA approval gate')
   ctx.effect(() => () => lease.dispose(), 'dsh-rw: lease heartbeat')
   ctx.effect(() => () => { void managed.disposeAll() }, 'dsh-rw: managed agents')
@@ -1034,7 +1061,7 @@ export function apply(ctx: Context, config: PluginOptions = {}): void {
     state.registerGuard = () => current.status()
     state.refreshRegistry = async () => await current.refresh()
     state.guardProbe = async () => await current.probe()
-    state.guardReady = current.install().catch(error => { console.error(`[dsh-remote-window-server] registry guard install failed: ${error instanceof Error ? error.message : String(error)}`) }).finally(() => guardReady.resolve())
+    state.guardReady = current.install().catch(error => { console.error(`[dsh-remote-workspace-server] registry guard install failed: ${error instanceof Error ? error.message : String(error)}`) }).finally(() => guardReady.resolve())
   })
   installRoutes(ctx, config, state, lease)
 }

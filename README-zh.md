@@ -1,8 +1,8 @@
-# dsh-remote-window-server
+# dsh-remote-workspace-server
 
 [English](README.md) | 中文
 
-本仓库是 [dsh-remote-window](https://github.com/graydovee/dsh-remote-window) 的远端部分。
+本仓库是 [dsh-remote-workspace](https://github.com/graydovee/dsh-remote-workspace) 的远端部分。
 它是安装到 per-client DSH profile 里的普通 DeepSeek Harness 插件，**不使用 stdio**，也不监听公网
 端口：client 通过一条 SSH 连接访问一个只绑 loopback 的 DSH web 服务。
 
@@ -14,6 +14,8 @@
 | 0.1.0-alpha.4 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | verified automatically |
 | 0.1.0-alpha.5 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | verified automatically |
 | 0.1.0-alpha.6 | >= 0.2.1-rc.2 <= 0.2.2-rc.1 | 0.2.2-rc.1 上自动验证通过；真机验证待跑 |
+| 0.1.0-alpha.7 | >= 0.2.1-rc.2 <= 0.2.2-rc.1 | 0.2.2-rc.1 上自动验证通过；真机验证待跑 |
+| 0.1.0-alpha.8 | >= 0.2.1-rc.2 <= 0.2.2-rc.1 | 0.2.2-rc.1 上自动验证通过；真机验证待跑 |
 
 `engines.dsh` 和全部 `@deepseek-ai/dsh-*` peer 写同一区间，本仓安装与测试的包钉区间内最新版本
 `0.2.2-rc.1`（包 manifest 记录 `dshVersion`）。区间外的运行时会由 client 直接拒绝，而不是跑到一半失败。
@@ -29,22 +31,40 @@
 
 v2 的 server 对话由 client 原生渲染；v1 的 embed/portal 路由只作为回退保留，不在正常 v2 流程中。
 
+## server UI 里的「远程连接」
+
+profile 自己的 DSH UI 里有一条「远程连接」导航行（`sidebar.panellist`，`id: dsh-remote-workspace`，
+`order: 100`，排在「自动化任务」之后）和它打开的一页（`main`，同一个 key）。两者都是本插件浏览器半（`lib/client.js`）的声明式槽位
+贡献，所以不管 UI 是在目标机上直接打开、还是被 client 全屏 iframe 嵌入都可见。
+
+- 列表归 client 所有：client host 用 P1 `client/targets` 发布脱敏快照，本插件只在内存里保存
+  （`updatedAt` 单调、最多 64 行、lease 释放时清空）；浏览器半每 2 s 用 profile 相对路径
+  `dsh-remote-workspace-server/api/client/targets` 读取一次，并在 `visibilitychange`/`focus` 时立即刷新。
+  该读取只过 `ctx.connection.admit`，不要求 lease 头。
+- 每行显示连接别名、`user@host:port`（WSL 显示发行版）、阶段文案和状态点；iframe 的 `dshRwTarget`
+  查询参数（缺失时用快照的 `activeTargetId`）指向的行高亮。
+- 点行向父窗口发 `dsh-rw/switch-target`，由 client 切换连接并重挂 iframe；「新建连接」发
+  `dsh-rw/open-connect-dialog`；「返回本地」发 `dsh-rw/close-portal`。在目标机上直接打开时没有 client
+  页面可执行命令，列表以只读方式显示并给出提示。
+- 浏览器半随 tarball 发布（`lib/client.js`、`exports['./client']`、`dsh.client`）。用旧 tarball 装过的
+  profile 不会出现该行；重装插件并重启 profile server 后生效。
+
 ## 如何部署
 
 大多数用户不需要直接安装本仓库。client 包内置精确同版本的
-`dsh-remote-window-server-<client-version>.tgz`，首次连接时：
+`dsh-remote-workspace-server-<client-version>.tgz`，首次连接时：
 
 1. 在目标机上传/复用兼容的 Node + DSH 运行时；
-2. 创建 `~/.dsh/profiles/graydovee-remote-window-<clientId>/` 及四个 profile 文件；
-3. 离线解包本 tarball 到 profile 的 `node_modules/dsh-remote-window-server/`；
+2. 创建 `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` 及四个 profile 文件；
+3. 离线解包本 tarball 到 profile 的 `node_modules/dsh-remote-workspace-server/`；
 4. 写入版本/sha marker 并启动 profile。
 
 profile 以只绑 loopback 的 web server 启动：
 
 ```sh
 DSH_HOME="$HOME" \
-PATH="$HOME/.dsh/remote-window/<clientId>/runtime/node/bin:$PATH" \
-exec <dsh> --profile graydovee-remote-window-<clientId> \
+PATH="$HOME/.dsh/remote-workspace/<clientId>/runtime/node/bin:$PATH" \
+exec <dsh> --profile graydovee-remote-workspace-<clientId> \
   --host 127.0.0.1 --port 0 --no-open
 ```
 
@@ -61,10 +81,15 @@ exec <dsh> --profile graydovee-remote-window-<clientId> \
 pnpm install
 pnpm typecheck
 pnpm test
+pnpm build
 pnpm pack:server-plugin
 ```
 
-打包脚本输出 `dist/server-plugin/dsh-remote-window-server-<version>.tgz`、对应 `.sha256`，以及
+`pnpm build` 依次跑三个 tsdown 配置，产出 `lib/plugin.js`（host 插件）、`lib/protocol.js`（共享 wire
+类型）和 `lib/client.js`（浏览器半，即上面那行与那一页）。构建后若 `lib/client.js` 里没有
+`__ModuleLoader__.load`，profile 的 UI 就没有连接列表，不要打包发布。
+
+打包脚本输出 `dist/server-plugin/dsh-remote-workspace-server-<version>.tgz`、对应 `.sha256`，以及
 包含协议、feature 列表、`dshVersion`、字节长度和校验和的 `.manifest.json`。client 仓库内置该
 tarball，并把校验和写入 `assets/server-plugin/checksums.json`；两个仓库必须使用同一发布版本和同一
 DSH 运行时钉版。
@@ -76,12 +101,12 @@ DSH 运行时钉版。
 
 | 路径 | 内容 |
 | --- | --- |
-| `~/.dsh/profiles/graydovee-remote-window-<clientId>/` | per-client profile、插件、profile 文件和 `.dsh-rw/lease.json` |
-| `~/.dsh/remote-window/profiles/graydovee-remote-window-<clientId>/` | `server.log`（0600）与 `server.pid` |
+| `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` | per-client profile、插件、profile 文件和 `.dsh-rw/lease.json` |
+| `~/.dsh/remote-workspace/profiles/graydovee-remote-workspace-<clientId>/` | `server.log`（0600）与 `server.pid` |
 | `~/.dsh/sessions/**` | 权威的官方 JSONL 会话日志（两种执行端共用） |
 | `~/.dsh/storages/workspace.json` | 权威的官方 workspace registry |
-| `~/.dsh/remote-window/state/`、`locks/` | executor 记录与 bootstrap 锁 |
-| `~/.dsh/remote-window/<clientId>/runtime/` | 可选的独立 DSH 运行时 |
+| `~/.dsh/remote-workspace/state/`、`locks/` | executor 记录与 bootstrap 锁 |
+| `~/.dsh/remote-workspace/<clientId>/runtime/` | 可选的独立 DSH 运行时 |
 
 已退役的 `remote-server-sessions/` 目录保持不动，v2 不读取它。
 

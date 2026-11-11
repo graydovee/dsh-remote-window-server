@@ -151,7 +151,7 @@ export function unconfinedSandboxFacts(argv: readonly string[]): {
 function noteUnconfined(mode: string): void {
   if (unconfinedReported.has(mode)) return
   unconfinedReported.add(mode)
-  console.error(`[dsh-remote-window] no sandbox backend inside the remote world; running \`${mode}\` commands unconfined there`)
+  console.error(`[dsh-remote-workspace] no sandbox backend inside the remote world; running \`${mode}\` commands unconfined there`)
 }
 const resizeRequest = z.object({ id: processIdSchema, cols: z.number().int().positive(), rows: z.number().int().positive() }).strict()
 const terminalOperation = z.object({ id: processIdSchema, value: z.string().optional() }).strict()
@@ -182,7 +182,7 @@ export interface RemoteServerOptions {
   readonly onClose?: () => void
 }
 
-/** Server half of the remote-window channel. */
+/** Server half of the remote-workspace channel. */
 export class RemoteExecutionServer {
   private readonly mux: FrameMux
   private readonly peer: SshRpcPeer
@@ -214,7 +214,7 @@ export class RemoteExecutionServer {
       transport: streamTransport(options.input, options.output),
       role: 'server',
       accept: endpoint => this.accept(endpoint),
-      label: 'remote-window-server',
+      label: 'remote-workspace-server',
     })
     this.peer = new SshRpcPeer(
       this.mux.jsonInput(),

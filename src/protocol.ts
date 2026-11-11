@@ -1,6 +1,6 @@
 /**
- * v1 profile-plugin protocol shared by dsh-remote-window and
- * dsh-remote-window-server.
+ * v1 profile-plugin protocol shared by dsh-remote-workspace and
+ * dsh-remote-workspace-server.
  *
  * Wire contract: doc/refactor-v1-protocol.md (frozen §16). Keep this file
  * byte-for-byte identical in both repositories.
@@ -10,10 +10,10 @@
 export const REMOTE_WORKSPACE_PLUGIN_PROTOCOL = 1 as const
 
 /** Plugin version this client build expects; the server package must match exactly. */
-export const REMOTE_WORKSPACE_PLUGIN_VERSION = '0.1.0-alpha.6'
+export const REMOTE_WORKSPACE_PLUGIN_VERSION = '0.1.0-alpha.7'
 
 /** Base path of the P1 plugin API on the profile server. */
-export const RW_ROUTE_PREFIX = '/dsh-remote-window-server' as const
+export const RW_ROUTE_PREFIX = '/dsh-remote-workspace-server' as const
 
 /** Exact P1 routes (protocol §4.1 / §6 / §7 / §9). */
 export const RW_PATHS = {
@@ -24,6 +24,7 @@ export const RW_PATHS = {
   bootstrap: `${RW_ROUTE_PREFIX}/embed/bootstrap.js`,
   embedCss: `${RW_ROUTE_PREFIX}/embed/embed.css`,
   sessionEvents: `${RW_ROUTE_PREFIX}/api/session/events`,
+  clientTargets: `${RW_ROUTE_PREFIX}/api/client/targets`,
 } as const
 
 /** P1 request headers identifying the lease owner. */
@@ -78,6 +79,7 @@ export const RW_METHODS = {
   sessionSelectModel: 'session/selectModel',
   sessionApproval: 'session/approval',
   sessionStatus: 'session/status',
+  clientTargets: 'client/targets',
 } as const
 
 export type RwMethod = (typeof RW_METHODS)[keyof typeof RW_METHODS]
@@ -118,6 +120,7 @@ export interface RwServerCapabilities {
   readonly sessionTimeline?: 1
   readonly sessionEvents?: 1
   readonly agentControl?: 1
+  readonly clientTargets?: 1
   readonly embed: { readonly storagePrefix: string; readonly mode: 'reload' | 'client-half' }
   readonly registryWriteGuard: 'prototype' | 'none'
   readonly registryReload: 'loader-disable-enable' | 'none'
@@ -254,6 +257,99 @@ export interface RwEmbedConfig {
   readonly protocol: typeof REMOTE_WORKSPACE_PLUGIN_PROTOCOL
   readonly storagePrefix: string
   readonly injectedAt: string
+}
+
+/** Embed ↔ client-page command revision (protocol §9.3 / §16.14). */
+export const RW_PORTAL_MESSAGE_VERSION = 1 as const
+
+/** Query parameter naming the target currently mounted in the frame (protocol §9.3). */
+export const RW_EMBED_TARGET_PARAM = 'dshRwTarget' as const
+
+/** One observed connection phase (protocol §16.14). */
+export type RwClientTargetPhase = 'connecting' | 'ready' | 'degraded' | 'failed' | 'stopped' | 'disconnected'
+
+/**
+ * One connection row the client publishes to its own profile server.
+ *
+ * Secret-free by construction: no credential reference, key path, host-key
+ * fingerprint or profile name ever crosses this boundary.
+ */
+export interface RwClientTarget {
+  readonly targetId: string
+  /** User-visible label, scrubbed before publication. */
+  readonly label: string
+  readonly kind: 'ssh' | 'wsl'
+  /** User-visible endpoint metadata; absent for a local WSL distribution target. */
+  readonly host?: string
+  readonly port?: number
+  readonly username?: string
+  readonly phase: RwClientTargetPhase
+  /** Present on the target the client currently shows in its main panel. */
+  readonly active?: true
+}
+
+/** `client/targets`: the client's whole connection list (protocol §16.14). */
+export interface RwClientTargetsValue {
+  readonly clientId: string
+  /** Monotonic publish stamp; the server drops a value older than its snapshot. */
+  readonly updatedAt: number
+  readonly activeTargetId?: string
+  readonly targets: readonly RwClientTarget[]
+}
+
+/** Commands the embedded server UI sends to the client page (protocol §9.3). */
+export type RwPortalCommand =
+  | { readonly v: typeof RW_PORTAL_MESSAGE_VERSION; readonly type: 'dsh-rw/switch-target'; readonly targetId: string }
+  | { readonly v: typeof RW_PORTAL_MESSAGE_VERSION; readonly type: 'dsh-rw/open-connect-dialog' }
+  | { readonly v: typeof RW_PORTAL_MESSAGE_VERSION; readonly type: 'dsh-rw/close-portal' }
+
+/** Longest accepted `targetId` in a portal command (target ids are opaque). */
+const RW_PORTAL_TARGET_ID_MAX = 200
+
+/**
+ * Build the command a server-side list row sends when it is clicked.
+ * @param targetId - the target the client page should activate.
+ * @returns the versioned command payload.
+ */
+export function rwPortalSwitchTarget(targetId: string): RwPortalCommand {
+  return { v: RW_PORTAL_MESSAGE_VERSION, type: 'dsh-rw/switch-target', targetId }
+}
+
+/** @returns the command asking the client page to open its connect dialog. */
+export function rwPortalOpenConnectDialog(): RwPortalCommand {
+  return { v: RW_PORTAL_MESSAGE_VERSION, type: 'dsh-rw/open-connect-dialog' }
+}
+
+/** @returns the command asking the client page to drop the frame. */
+export function rwPortalClosePortal(): RwPortalCommand {
+  return { v: RW_PORTAL_MESSAGE_VERSION, type: 'dsh-rw/close-portal' }
+}
+
+/**
+ * Validate one iframe→parent message body.
+ *
+ * Accepts only the versioned command vocabulary; the caller still checks that
+ * the event origin matches and the source is the mounted frame.
+ * @param data - raw `MessageEvent.data`.
+ * @returns the command, or undefined for anything unrecognized.
+ */
+export function parseRwPortalCommand(data: unknown): RwPortalCommand | undefined {
+  if (data === null || typeof data !== 'object') return undefined
+  const frame = data as Record<string, unknown>
+  if (frame['v'] !== RW_PORTAL_MESSAGE_VERSION) return undefined
+  switch (frame['type']) {
+    case 'dsh-rw/switch-target': {
+      const targetId = frame['targetId']
+      if (typeof targetId !== 'string' || targetId.length === 0 || targetId.length > RW_PORTAL_TARGET_ID_MAX) return undefined
+      return rwPortalSwitchTarget(targetId)
+    }
+    case 'dsh-rw/open-connect-dialog':
+      return rwPortalOpenConnectDialog()
+    case 'dsh-rw/close-portal':
+      return rwPortalClosePortal()
+    default:
+      return undefined
+  }
 }
 
 /** One directory entry returned by the P1 `fs/list` browser (protocol §4.3). */

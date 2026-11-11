@@ -1,6 +1,6 @@
 # Publish the two artifacts this project owns, on the plugin tag `v<version>`:
 #
-#   * `dsh-remote-window-server-<version>.tgz` (+ `.sha256`, `.manifest.json`) —
+#   * `dsh-remote-workspace-server-<version>.tgz` (+ `.sha256`, `.manifest.json`) —
 #     the server plugin package. The client repo bundles the byte-identical
 #     tarball into `assets/server-plugin/`, so both repos release one version.
 #   * `dsh-runtime-<dsh version>-<platform>-<arch>[-libc].tar.gz` (+ `.sha256`,
@@ -42,7 +42,7 @@ env:
   # The compatibility table (and the snapshot projected from it) lives with the
   # plugin; this repository downloads the client release asset to build exactly
   # the matrix that plugin version supports.
-  CLIENT_REPO: graydovee/dsh-remote-window
+  CLIENT_REPO: graydovee/dsh-remote-workspace
 
 jobs:
   resolve:
@@ -263,7 +263,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.resolve.outputs.tag }}
-          name: dsh-remote-window-server ${{ needs.resolve.outputs.plugin }} · runtime for dsh ${{ needs.resolve.outputs.dsh }}
+          name: dsh-remote-workspace-server ${{ needs.resolve.outputs.plugin }} · runtime for dsh ${{ needs.resolve.outputs.dsh }}
           body_path: release-notes.md
           fail_on_unmatched_files: true
           files: |

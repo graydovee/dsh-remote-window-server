@@ -1,12 +1,15 @@
 name: npm-release
 
-# Publishes the server plugin package (`dsh-remote-window-server`) to npm on the
+# Publishes the server plugin package (`dsh-remote-workspace-server`) to npm on the
 # plugin version tag (`v<version>`). The client repo bundles the exact same
 # tarball into `assets/server-plugin/`, so both repos must release one version.
 # The runtime tarballs (`node/` + `dsh/`) are a different artifact and live in
 # server-release.yml.
 #
-# npm needs the NPM_TOKEN repository secret and `id-token: write` for provenance.
+# npm authentication is GitHub Actions OIDC (Trusted Publishing): this
+# repository has no npm token secret. The npm package names this repository and
+# `npm-release.yml` as its trusted publisher, and `id-token: write` below is
+# what lets npm exchange the job identity for a short-lived token.
 
 on:
   push:
@@ -78,21 +81,17 @@ jobs:
 
       - name: publish to npm
         env:
-          # Optional: see the client release workflow; without a token npm
-          # falls back to Trusted Publishing via this job's OIDC identity.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DIST_TAG: ${{ steps.dist-tag.outputs.tag }}
         run: |
           set -euo pipefail
-          # setup-node's registry .npmrc references the NODE_AUTH_TOKEN env;
-          # without a token configured, drop that line so npm can use the
-          # job's OIDC identity (Trusted Publishing) instead of a token.
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            npmrc="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
-            if [ -f "$npmrc" ]; then
-              grep -v '_authToken' "$npmrc" > "$npmrc.tmp" || true
-              mv "$npmrc.tmp" "$npmrc"
-            fi
+          # setup-node's registry .npmrc references a token env this workflow
+          # deliberately never sets; drop the placeholder so npm authenticates
+          # with the job's OIDC identity (Trusted Publishing) instead of an
+          # empty token.
+          npmrc="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+          if [ -f "$npmrc" ]; then
+            grep -v '_authToken' "$npmrc" > "$npmrc.tmp" || true
+            mv "$npmrc.tmp" "$npmrc"
           fi
           # Prefix with ./ so npm treats the argument as a local tarball
           # instead of a GitHub shorthand (dist/x.tgz -> github:dist/x.tgz).

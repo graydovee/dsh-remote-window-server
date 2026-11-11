@@ -1,9 +1,9 @@
-# dsh-remote-window-server
+# dsh-remote-workspace-server
 
 English | [中文](README-zh.md)
 
 This repository is the remote half of
-[dsh-remote-window](https://github.com/graydovee/dsh-remote-window). It is a normal DeepSeek
+[dsh-remote-workspace](https://github.com/graydovee/dsh-remote-workspace). It is a normal DeepSeek
 Harness plugin installed into a per-client DSH profile. It does **not** use stdio and does not listen
 on a public port: the client reaches it through one SSH connection and a loopback-only DSH web server.
 
@@ -15,6 +15,8 @@ on a public port: the client reaches it through one SSH connection and a loopbac
 | 0.1.0-alpha.4 | 0.2.1-rc.3 | verified |
 | 0.1.0-alpha.5 | >= 0.2.1-rc.2 <= 0.2.1-rc.5 | verified automatically; rc.3 also run end-to-end |
 | 0.1.0-alpha.6 | >= 0.2.1-rc.2 <= 0.2.2-rc.1 | verified automatically on 0.2.2-rc.1; real-host run pending |
+| 0.1.0-alpha.7 | >= 0.2.1-rc.2 <= 0.2.2-rc.1 | verified automatically on 0.2.2-rc.1; real-host run pending |
+| 0.1.0-alpha.8 | >= 0.2.1-rc.2 <= 0.2.2-rc.1 | verified automatically on 0.2.2-rc.1; real-host run pending |
 
 `engines.dsh` and every `@deepseek-ai/dsh-*` peer accept that interval, while the packages this repository
 installs and tests against are pinned to the newest release inside it. A runtime outside the interval is
@@ -34,22 +36,43 @@ refused by the client instead of failing halfway.
 The client renders the server conversation natively in v2. The legacy embed/portal routes remain only
 for v1 fallback and are not part of the normal v2 flow.
 
+## Connections inside the server UI
+
+The profile's own DSH UI ships a 「远程连接」 row in the sidebar panellist group and the page behind it.
+Both are declared slot contributions of this plugin's browser half (`lib/client.js`), so they appear
+whether the UI is opened directly on the target or embedded full-screen by the client.
+
+- The list belongs to the client. The client host publishes a secret-free snapshot over P1
+  `client/targets`; this plugin keeps it in memory only (monotonic `updatedAt`, at most 64 rows, cleared
+  when the lease is released) and the browser half reads it from the profile-relative route
+  `dsh-remote-workspace-server/api/client/targets` every 2 s — plus immediately on
+  `visibilitychange`/`focus`. The read passes `ctx.connection.admit` only; it needs no lease headers.
+- Rows show the connection label, `user@host:port` (or the WSL distribution), its phase and a state dot;
+  the target named by the frame's `dshRwTarget` query (or the snapshot's `activeTargetId`) is highlighted.
+- Clicking a row posts `dsh-rw/switch-target` to the parent window and the client switches the
+  connection; 「新建连接」 posts `dsh-rw/open-connect-dialog`; 「返回本地」 posts
+  `dsh-rw/close-portal`. Opened directly on the target there is no client page, so the list renders
+  read-only with a short note.
+- The browser half ships in the tarball (`lib/client.js`, `exports['./client']`, `dsh.client`). A profile
+  installed from an older tarball has no row until the plugin is reinstalled and the profile server is
+  restarted.
+
 ## How it is deployed
 
 Most users never install this repository directly. The client package embeds the exact matching
-`dsh-remote-window-server-<client-version>.tgz` and, on first connect:
+`dsh-remote-workspace-server-<client-version>.tgz` and, on first connect:
 
 1. uploads/selects a compatible Node + DSH runtime on the target;
-2. creates `~/.dsh/profiles/graydovee-remote-window-<clientId>/` with the four profile files;
-3. unpacks this tarball into the profile's `node_modules/dsh-remote-window-server/` offline;
+2. creates `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` with the four profile files;
+3. unpacks this tarball into the profile's `node_modules/dsh-remote-workspace-server/` offline;
 4. writes a version/sha marker and starts the profile.
 
 The profile is started with a loopback-only web server:
 
 ```sh
 DSH_HOME="$HOME" \
-PATH="$HOME/.dsh/remote-window/<clientId>/runtime/node/bin:$PATH" \
-exec <dsh> --profile graydovee-remote-window-<clientId> \
+PATH="$HOME/.dsh/remote-workspace/<clientId>/runtime/node/bin:$PATH" \
+exec <dsh> --profile graydovee-remote-workspace-<clientId> \
   --host 127.0.0.1 --port 0 --no-open
 ```
 
@@ -68,10 +91,16 @@ profile process and closes the tunnel.
 pnpm install
 pnpm typecheck
 pnpm test
+pnpm build
 pnpm pack:server-plugin
 ```
 
-The pack script writes `dist/server-plugin/dsh-remote-window-server-<version>.tgz`, its `.sha256`
+`pnpm build` runs three tsdown targets and writes `lib/plugin.js` (host plugin), `lib/protocol.js`
+(shared wire types) and `lib/client.js` (browser half, the slot contributions described above). A build
+that does not leave `lib/client.js` containing `__ModuleLoader__.load` ships a profile UI without the
+connection list.
+
+The pack script writes `dist/server-plugin/dsh-remote-workspace-server-<version>.tgz`, its `.sha256`
 and a `.manifest.json` containing the protocol, feature list, `dshVersion`, byte length and checksum.
 The client repository vendors that tarball and records the checksum in
 `assets/server-plugin/checksums.json`; both repositories must use the same release version and the same
@@ -84,12 +113,12 @@ provisioner so the profile files, marker, runtime and lease stay consistent.
 
 | Path | Content |
 | --- | --- |
-| `~/.dsh/profiles/graydovee-remote-window-<clientId>/` | per-client profile, plugin, profile files and `.dsh-rw/lease.json` |
-| `~/.dsh/remote-window/profiles/graydovee-remote-window-<clientId>/` | `server.log` (0600) and `server.pid` |
+| `~/.dsh/profiles/graydovee-remote-workspace-<clientId>/` | per-client profile, plugin, profile files and `.dsh-rw/lease.json` |
+| `~/.dsh/remote-workspace/profiles/graydovee-remote-workspace-<clientId>/` | `server.log` (0600) and `server.pid` |
 | `~/.dsh/sessions/**` | authoritative official JSONL session logs (shared by both modes) |
 | `~/.dsh/storages/workspace.json` | authoritative official workspace registry |
-| `~/.dsh/remote-window/state/`, `locks/` | executor records and bootstrap locks |
-| `~/.dsh/remote-window/<clientId>/runtime/` | optional isolated DSH runtime |
+| `~/.dsh/remote-workspace/state/`, `locks/` | executor records and bootstrap locks |
+| `~/.dsh/remote-workspace/<clientId>/runtime/` | optional isolated DSH runtime |
 
 The retired `remote-server-sessions/` directory is left untouched and is not read by v2.
 

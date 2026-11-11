@@ -1,7 +1,7 @@
 {
-  "name": "dsh-remote-window-server",
-  "version": "0.1.0-alpha.6",
-  "description": "DeepSeek Harness server plugin for dsh-remote-window v2: expose a per-client profile DSH to its SSH client through the P1 API, lease, managed agents, native session stream and registry guard.",
+  "name": "dsh-remote-workspace-server",
+  "version": "0.1.0-alpha.8",
+  "description": "DeepSeek Harness server plugin for dsh-remote-workspace v2: expose a per-client profile DSH to its SSH client through the P1 API, lease, managed agents, native session stream and registry guard.",
   "type": "module",
   "main": "lib/plugin.js",
   "exports": {
@@ -9,6 +9,10 @@
     "./protocol": {
       "types": "./lib/types/protocol.d.ts",
       "default": "./lib/protocol.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
     },
     "./package.json": "./package.json"
   },
@@ -20,7 +24,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/graydovee/dsh-remote-window-server"
+    "url": "https://github.com/graydovee/dsh-remote-workspace-server"
   },
   "publishConfig": {
     "access": "public"
@@ -29,7 +33,14 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
-    "manifestVersion": 1
+    "manifestVersion": 1,
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ],
+      "platform": "web"
+    }
   },
   "files": [
     "lib",
@@ -39,10 +50,10 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsdown && tsdown --config tsdown.plugin.config.mjs",
+    "build": "tsdown && tsdown --config tsdown.plugin.config.mjs && tsdown --config tsdown.client.config.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "prepare": "tsdown && tsdown --config tsdown.plugin.config.mjs",
+    "prepare": "tsdown && tsdown --config tsdown.plugin.config.mjs && tsdown --config tsdown.client.config.mjs",
     "pack:server-plugin": "node scripts/pack-server-plugin.mjs",
     "build:runtime": "node scripts/build-runtime-artifact.mjs"
   },
@@ -82,7 +93,7 @@
     "dsh-plugin",
     "deepseek-harness",
     "dsh",
-    "remote-window",
+    "remote-workspace",
     "ssh",
     "server-package"
   ]
